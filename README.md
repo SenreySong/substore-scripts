@@ -50,6 +50,7 @@ https://cdn.jsdelivr.net/gh/SenreySong/substore-scripts@main/sing-box/substore.j
 - 广告 / QUIC 拦截使用 `action: reject` + `method: drop`。
 - 美国子组展示名：优化 / **落地** / 家宽（兼容旧名「直连」）。
 - 按 1.14 开启 `experimental.cache_file`（`store_fakeip` + `store_dns`）。
+- TUN 显式 `dns_mode: hijack` + `dns_address`（1.14.0-alpha.21 接口 DNS 劫持），并确保路由 `hijack-dns`。
 
 ## 本地开发
 

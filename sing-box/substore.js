@@ -1892,6 +1892,93 @@ async function operator(input, targetPlatform, context) {
     }
   }
 
+  // 从 TUN address 推导 dns_address（取接口地址 +1，与官方文档示例一致）
+  function deriveTunDnsAddresses(addresses) {
+    const result = [];
+    for (const item of addresses || []) {
+      const raw = String(item || "").trim();
+      if (!raw) continue;
+      const ip = raw.split("/")[0];
+      if (!ip) continue;
+
+      if (ip.includes(":")) {
+        // IPv6：末段 +1（::1 → ::2）
+        const parts = ip.split(":");
+        let i = parts.length - 1;
+        while (i >= 0 && parts[i] === "") i -= 1;
+        if (i < 0) continue;
+        const n = parseInt(parts[i] || "0", 16);
+        if (Number.isNaN(n)) continue;
+        parts[i] = (n + 1).toString(16);
+        result.push(parts.join(":"));
+      } else {
+        const parts = ip.split(".").map((x) => Number(x));
+        if (parts.length !== 4 || parts.some((x) => Number.isNaN(x))) continue;
+        parts[3] = (parts[3] + 1) & 0xff;
+        result.push(parts.join("."));
+      }
+    }
+    return uniqueList(result);
+  }
+
+  // 1.14.0-alpha.21：dns_mode=hijack + dns_address
+  function applyTunDnsHijack(inbound) {
+    inbound.dns_mode = "hijack";
+
+    const derived = deriveTunDnsAddresses(inbound.address);
+    if (derived.length > 0) {
+      // 显式写入时不会自动 hijack-dns，需配合路由 hijack-dns 规则
+      inbound.dns_address = derived;
+    } else {
+      // 未推导成功则交给内核默认（按 address 下一跳自动生成并劫持）
+      delete inbound.dns_address;
+    }
+  }
+
+  // 确保路由侧有 DNS 劫持（显式 dns_address 时必须；无则作双保险）
+  function ensureRouteDnsHijackRules(targetConfig) {
+    if (!targetConfig.route || typeof targetConfig.route !== "object") {
+      targetConfig.route = {};
+    }
+    if (!Array.isArray(targetConfig.route.rules)) {
+      targetConfig.route.rules = [];
+    }
+
+    const rules = targetConfig.route.rules;
+    const hasProtocolDnsHijack = rules.some(
+      (rule) =>
+        rule &&
+        rule.action === "hijack-dns" &&
+        (rule.protocol === "dns" ||
+          (Array.isArray(rule.protocol) && rule.protocol.includes("dns"))),
+    );
+    const hasPort53Hijack = rules.some(
+      (rule) =>
+        rule &&
+        rule.action === "hijack-dns" &&
+        (rule.port === 53 ||
+          (Array.isArray(rule.port) && rule.port.includes(53))),
+    );
+
+    // 插在规则列表靠前位置（在已有 sniff 之后尽量靠前）
+    let insertAt = 0;
+    for (let i = 0; i < rules.length; i += 1) {
+      if (rules[i] && rules[i].action === "sniff") insertAt = i + 1;
+    }
+
+    const toInsert = [];
+    if (!hasProtocolDnsHijack) {
+      toInsert.push({ protocol: "dns", action: "hijack-dns" });
+    }
+    if (!hasPort53Hijack) {
+      toInsert.push({ port: 53, action: "hijack-dns" });
+    }
+
+    if (toInsert.length) {
+      rules.splice(insertAt, 0, ...toInsert);
+    }
+  }
+
   // sing-box 1.14：独立 cache_file；store_rdrc 已废弃，改用 store_dns
   // 参考：https://sing-box.sagernet.org/configuration/experimental/cache-file/
   function applySingBox114CacheFile(targetConfig) {
@@ -2012,7 +2099,13 @@ async function operator(input, targetPlatform, context) {
           : [];
 
       inbound.address = uniqueList([...addresses, "fdfe:dcba:9876::1/126"]);
+
+      // sing-box 1.14.0-alpha.21+：TUN DNS 模式与接口 DNS 劫持
+      // https://sing-box.sagernet.org/configuration/inbound/tun/#dns_mode
+      applyTunDnsHijack(inbound);
     }
+
+    ensureRouteDnsHijackRules(targetConfig);
 
     for (const outbound of targetConfig.outbounds) {
       if (!outbound || typeof outbound !== "object") continue;
