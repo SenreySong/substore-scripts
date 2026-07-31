@@ -1892,6 +1892,52 @@ async function operator(input, targetPlatform, context) {
     }
   }
 
+  // 更常见的 ULA（替代文档示例 fdfe:dcba:9876::/126）
+  const TUN_IPV4_DEFAULT = "172.19.0.1/30";
+  const TUN_IPV6_DEFAULT = "fd00::1/126";
+
+  // 局域网 / 本机链路：auto_route 时不进 TUN（仍可被 route 里 ip_is_private→Direct 兜底）
+  const TUN_ROUTE_EXCLUDE_DEFAULT = [
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "169.254.0.0/16",
+    "fc00::/7",
+    "fe80::/10",
+  ];
+
+  function applyTunAddressAndBypass(inbound) {
+    let addresses = Array.isArray(inbound.address)
+      ? inbound.address.map(String)
+      : inbound.address
+        ? [String(inbound.address)]
+        : [];
+
+    // 旧文档式 v6 前缀 → 更通用的 fd00::/126
+    addresses = addresses.map((item) => {
+      if (/^fdfe:dcba:9876::/i.test(item)) return TUN_IPV6_DEFAULT;
+      return item;
+    });
+
+    const hasV4 = addresses.some((a) => a.includes(".") && !a.includes(":"));
+    const hasV6 = addresses.some((a) => a.includes(":"));
+    if (!hasV4) addresses.unshift(TUN_IPV4_DEFAULT);
+    if (!hasV6) addresses.push(TUN_IPV6_DEFAULT);
+
+    inbound.address = uniqueList(addresses);
+
+    // 合并局域网绕过，不覆盖模板已有项；不排除 FakeIP 198.18.0.0/15
+    const existingExclude = Array.isArray(inbound.route_exclude_address)
+      ? inbound.route_exclude_address.map(String)
+      : inbound.route_exclude_address
+        ? [String(inbound.route_exclude_address)]
+        : [];
+    inbound.route_exclude_address = uniqueList([
+      ...existingExclude,
+      ...TUN_ROUTE_EXCLUDE_DEFAULT,
+    ]);
+  }
+
   // 从 TUN address 推导 dns_address（取接口地址 +1，与官方文档示例一致）
   function deriveTunDnsAddresses(addresses) {
     const result = [];
@@ -2092,13 +2138,7 @@ async function operator(input, targetPlatform, context) {
       : []) {
       if (!inbound || inbound.type !== "tun") continue;
 
-      const addresses = Array.isArray(inbound.address)
-        ? inbound.address
-        : inbound.address
-          ? [inbound.address]
-          : [];
-
-      inbound.address = uniqueList([...addresses, "fdfe:dcba:9876::1/126"]);
+      applyTunAddressAndBypass(inbound);
 
       // sing-box 1.14.0-alpha.21+：TUN DNS 模式与接口 DNS 劫持
       // https://sing-box.sagernet.org/configuration/inbound/tun/#dns_mode
