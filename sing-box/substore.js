@@ -19,6 +19,17 @@ async function operator(input, targetPlatform, context) {
   const MAIN_PROXY_TAG = "🌏️Main Proxy";
   const RULE_SET_DETOUR = MAIN_PROXY_TAG;
   const TEST_URL = "https://cp.cloudflare.com";
+  // TUN 常量必须在 applySingBox114Dns 调用前初始化（避免 TDZ）
+  const TUN_IPV4_DEFAULT = "172.19.0.1/30";
+  const TUN_IPV6_DEFAULT = "fd00::1/126";
+  const TUN_ROUTE_EXCLUDE_DEFAULT = [
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "169.254.0.0/16",
+    "fc00::/7",
+    "fe80::/10",
+  ];
 
   // 逻辑名 → 实际 outbound tag（优先复用模板已有组）
   // 不再使用 ♾️Auto Select / 全部节点 全节点聚合组
@@ -2076,20 +2087,6 @@ async function operator(input, targetPlatform, context) {
       config.route.final = MAIN_PROXY_TAG;
     }
   }
-
-  // 更常见的 ULA（替代文档示例 fdfe:dcba:9876::/126）
-  const TUN_IPV4_DEFAULT = "172.19.0.1/30";
-  const TUN_IPV6_DEFAULT = "fd00::1/126";
-
-  // 局域网 / 本机链路：auto_route 时不进 TUN（仍可被 route 里 ip_is_private→Direct 兜底）
-  const TUN_ROUTE_EXCLUDE_DEFAULT = [
-    "10.0.0.0/8",
-    "172.16.0.0/12",
-    "192.168.0.0/16",
-    "169.254.0.0/16",
-    "fc00::/7",
-    "fe80::/10",
-  ];
 
   function applyTunAddressAndBypass(inbound) {
     let addresses = Array.isArray(inbound.address)
