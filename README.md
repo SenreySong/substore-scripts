@@ -31,17 +31,25 @@ https://cdn.jsdelivr.net/gh/SenreySong/substore-scripts@main/sing-box/substore.j
 
 ## Sub-Store 用法
 
-1. **文件**：内容为 sing-box 完整 JSON 模板（本机可参考 `examples/config.sample.json`，该目录不上传）。
-2. **脚本操作**：URL 填上面的 raw 地址。
+1. **文件**：远程/本地内容为 sing-box 完整 JSON 模板（本机可参考 `examples/config.sample.json`，该目录不上传）。
+2. **脚本操作**：模式选 **链接 (link)**，URL 必须带 hash 参数（见下）。
 3. **参数**（只需要一个）：
 
 | key | value 示例 | 说明 |
 |-----|------------|------|
 | `collectionName` | `VPS-ALL` | Sub-Store 里订阅集合的名称 |
 
-### 参数怎么传（重要）
+### 参数怎么传（必读）
 
-远程脚本 URL **hash 传参**（Sub-Store 官方格式）：
+**`mode: link` 时，Sub-Store 只从脚本 URL 的 `#` 后解析 `$arguments`，前端「参数」表会被忽略。**
+
+正确写法（推荐直接整段贴进脚本 URL）：
+
+```text
+https://raw.githubusercontent.com/SenreySong/substore-scripts/main/sing-box/substore.js#collectionName=VPS-ALL
+```
+
+需要强制刷新脚本缓存时再加：
 
 ```text
 https://raw.githubusercontent.com/SenreySong/substore-scripts/main/sing-box/substore.js#collectionName=VPS-ALL&noCache
@@ -49,17 +57,11 @@ https://raw.githubusercontent.com/SenreySong/substore-scripts/main/sing-box/subs
 
 注意：
 
-- 第一个 `#` 后面是参数表
-- **多个参数之间用 `&`**，不要写成 `#a=1#b=2`
-- `noCache` 无值表示布尔 true（跳过脚本缓存）
+- 第一个 `#` 后面才是参数；**多个参数用 `&` 连接**，不要写成 `#a=1#b=2`
+- 只填 raw 地址、却把 `collectionName` 写在参数表里 → 脚本会因缺参抛错
+- Sub-Store 在「文件」脚本出错且已有 `$content` 时**会静默回退原模板**（日志里往往没有 ERROR），表现就是 curl 仍是未处理的样例 JSON
 
-也可以不写在 URL 里，而在前端「参数」表单独填：
-
-| key | value |
-|-----|--------|
-| `collectionName` | `VPS-ALL` |
-
-
+若坚持用「参数」表，必须把脚本模式改成**非 link**（把脚本正文贴进内容框 / script 模式），此时 `arguments` 表才会生效。
 
 其它行为写死在脚本内，无需再配。
 
