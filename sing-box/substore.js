@@ -66,6 +66,17 @@ async function operator(input, targetPlatform, context) {
     config.route.rule_set = [];
   }
 
+  // 订阅节点可能用 name 而不是 tag
+  for (const outbound of config.outbounds) {
+    if (outbound && !outbound.tag && outbound.name) {
+      outbound.tag = String(outbound.name);
+    }
+  }
+
+  // 尽早删掉空的 Auto Select，避免后续任何阶段带着 empty urltest
+  // （样例里 Auto Select.outbounds=[] 会直接触发 missing tags）
+  stripBrokenPolicyGroups(config);
+
   applySingBox114Dns(config);
   applySingBox114CacheFile(config);
 
@@ -108,11 +119,13 @@ async function operator(input, targetPlatform, context) {
 
   for (const outbound of incomingOutbounds) {
     if (!outbound || typeof outbound !== "object") continue;
+    if (!outbound.tag && outbound.name) outbound.tag = String(outbound.name);
     delete outbound.domain_strategy;
   }
 
   for (const endpoint of incomingEndpoints) {
     if (!endpoint || typeof endpoint !== "object") continue;
+    if (!endpoint.tag && endpoint.name) endpoint.tag = String(endpoint.name);
     delete endpoint.domain_strategy;
   }
 
@@ -127,10 +140,33 @@ async function operator(input, targetPlatform, context) {
 
   for (const outbound of incomingOutbounds) {
     if (!outbound || !outbound.tag) continue;
+    // 跳过订阅里自带的空策略组 / 特殊出站，只收叶子代理
+    if (isPolicyGroup(outbound)) continue;
+    if (["direct", "block", "dns", "reject"].includes(String(outbound.type || "").toLowerCase())) {
+      continue;
+    }
 
     incomingNodeTags.push(outbound.tag);
 
-    if (existingTags.has(outbound.tag)) continue;
+    const existing = findOutboundByTag(outbound.tag);
+    if (existing) {
+      // 模板已有同名策略组时，不要跳过节点：给节点加后缀以免 collison
+      if (isPolicyGroup(existing)) {
+        let n = 1;
+        let alt = `${outbound.tag}-node`;
+        while (existingTags.has(alt)) {
+          n += 1;
+          alt = `${outbound.tag}-node${n}`;
+        }
+        outbound.tag = alt;
+        incomingNodeTags[incomingNodeTags.length - 1] = alt;
+      } else {
+        // 同名叶子：用订阅覆盖模板占位
+        const idx = config.outbounds.indexOf(existing);
+        if (idx >= 0) config.outbounds[idx] = outbound;
+        continue;
+      }
+    }
 
     existingTags.add(outbound.tag);
     addedOutbounds.push(outbound);
@@ -266,6 +302,9 @@ async function operator(input, targetPlatform, context) {
   // 国家/地区策略组排在所有策略组最前
   reorderOutboundsPutRegionsFirst(regionGroupTagsOrdered);
   // 重排后再清洗一次 default / 悬空引用
+  sanitizePolicyGroupMembers();
+  // 最终硬校验：任何策略组不得再引用不存在的 tag / 不得为空
+  stripBrokenPolicyGroups(config);
   sanitizePolicyGroupMembers();
 
   input.$content = JSON.stringify(config, null, 2);
@@ -635,6 +674,20 @@ async function operator(input, targetPlatform, context) {
     const nextTag = resolveGroupTag(info, aliases);
     if (!nextTag) return null;
 
+    // 只保留真实存在的叶子 tag
+    const leafSet = new Set(
+      config.outbounds
+        .filter((item) => item && item.tag && !isPolicyGroup(item))
+        .map((item) => item.tag),
+    );
+    for (const ep of config.endpoints || []) {
+      if (ep && ep.tag) leafSet.add(ep.tag);
+    }
+    const safeNodes = uniqueList(
+      (nodeTags || []).filter((t) => t && leafSet.has(t)),
+    );
+    if (!safeNodes.length) return null;
+
     if (group) {
       if (!Array.isArray(group.outbounds)) return null;
 
@@ -642,10 +695,9 @@ async function operator(input, targetPlatform, context) {
         renameOutboundTag(group.tag, nextTag);
       }
 
-      group.outbounds = uniqueList(nodeTags);
-      if (group.type === "urltest") {
-        group.url = TEST_URL;
-      }
+      group.type = "selector";
+      group.outbounds = safeNodes;
+      delete group.url;
       syncSelectorDefault(group);
       return group;
     }
@@ -653,7 +705,7 @@ async function operator(input, targetPlatform, context) {
     group = {
       type: "selector",
       tag: nextTag,
-      outbounds: uniqueList(nodeTags),
+      outbounds: safeNodes,
       interrupt_exist_connections: false,
     };
 
@@ -1066,9 +1118,103 @@ async function operator(input, targetPlatform, context) {
       }
     }
 
-    group.outbounds = uniqueList(members.filter(Boolean));
+    // 只写入当前已存在的 tag，杜绝 missing tags
+    const available = new Set([
+      ...config.outbounds.map((item) => item && item.tag).filter(Boolean),
+      ...(config.endpoints || []).map((item) => item && item.tag).filter(Boolean),
+    ]);
+    const safeMembers = uniqueList(
+      (members || []).filter(
+        (t) => t && t !== tag && available.has(t),
+      ),
+    );
+    if (!safeMembers.length) {
+      if (available.has("Direct") && tag !== "Direct") safeMembers.push("Direct");
+      else if (available.has("direct") && tag !== "direct") safeMembers.push("direct");
+    }
+    group.outbounds = safeMembers;
     syncSelectorDefault(group);
     return group;
+  }
+
+  // 删除空策略组 / 悬空引用，并清掉 ♾️Auto Select
+  function stripBrokenPolicyGroups(targetConfig) {
+    if (!targetConfig || !Array.isArray(targetConfig.outbounds)) return;
+
+    const AUTO = "♾️Auto Select";
+    const available = () =>
+      new Set(
+        targetConfig.outbounds.map((item) => item && item.tag).filter(Boolean),
+      );
+
+    // 先删 Auto Select 本体
+    targetConfig.outbounds = targetConfig.outbounds.filter(
+      (item) => !(item && item.tag === AUTO),
+    );
+
+    // 清引用
+    for (const outbound of targetConfig.outbounds) {
+      if (!outbound || !Array.isArray(outbound.outbounds)) continue;
+      outbound.outbounds = outbound.outbounds.filter((t) => t && t !== AUTO);
+      if (outbound.default === AUTO) delete outbound.default;
+    }
+
+    // 反复清：空组、全是无效成员的组
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const tags = available();
+      const nextOutbounds = [];
+      for (const outbound of targetConfig.outbounds) {
+        if (!outbound) continue;
+        if (
+          outbound.type === "selector" ||
+          outbound.type === "urltest"
+        ) {
+          const members = uniqueList(
+            (outbound.outbounds || []).filter(
+              (t) => typeof t === "string" && t && t !== outbound.tag && tags.has(t),
+            ),
+          );
+          if (!members.length) {
+            // 空策略组直接丢弃（避免 missing tags）
+            changed = true;
+            continue;
+          }
+          outbound.outbounds = members;
+          if (outbound.default && !members.includes(outbound.default)) {
+            outbound.default = members[0];
+          }
+          if (outbound.type === "selector" && !outbound.default) {
+            outbound.default = members[0];
+          }
+        }
+        nextOutbounds.push(outbound);
+      }
+      if (nextOutbounds.length !== targetConfig.outbounds.length) {
+        changed = true;
+      }
+      targetConfig.outbounds = nextOutbounds;
+    }
+
+    // 路由 / DNS 里指向已删组的，改 Main 或 Direct
+    const tags = available();
+    const fallback = tags.has(MAIN_PROXY_TAG)
+      ? MAIN_PROXY_TAG
+      : tags.has("Direct")
+        ? "Direct"
+        : [...tags][0];
+
+    for (const rule of (targetConfig.route && targetConfig.route.rules) || []) {
+      if (rule && rule.outbound && !tags.has(rule.outbound)) {
+        rule.outbound = fallback;
+      }
+    }
+    for (const server of (targetConfig.dns && targetConfig.dns.servers) || []) {
+      if (server && server.detour && !tags.has(server.detour)) {
+        server.detour = fallback;
+      }
+    }
   }
 
   // 优先复用模板已有策略组，没有再按 preferred 新建
