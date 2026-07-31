@@ -2,3 +2,9 @@
 *.log
 .idea/
 .vscode/
+
+# 本地样例配置（可能含节点结构/个人环境，不推送）
+examples/
+**/config.sample.json
+**/config.json
+**/config
