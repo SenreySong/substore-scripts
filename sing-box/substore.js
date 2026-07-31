@@ -147,6 +147,12 @@ async function operator(input, targetPlatform, context) {
     addedEndpoints.push(endpoint);
   }
 
+  // 先把节点写入 config，再建策略组，避免 selector 引用尚不存在的 tag
+  config.outbounds.push(...addedOutbounds);
+  config.endpoints.push(...addedEndpoints);
+  addedOutbounds.length = 0;
+  addedEndpoints.length = 0;
+
   const allNodeTags = collectAllNodeTags();
   const nodeTagSet = new Set(allNodeTags);
   const buckets = new Map();
@@ -252,16 +258,15 @@ async function operator(input, targetPlatform, context) {
 
   applyGfsRouteAndRulesets(RULE_SET_DETOUR);
 
-  config.outbounds.push(...addedOutbounds);
-  config.endpoints.push(...addedEndpoints);
-
-  // 节点落地后清洗：删 Auto Select / 全部节点，并去掉悬空引用
+  // 清洗：删 Auto Select / 全部节点，并去掉悬空引用（必须在分组都建完后）
   removeUnusedAllNodesGroup();
   removeClashGlobalGroup();
   removeAutoSelectGroup();
   sanitizePolicyGroupMembers();
   // 国家/地区策略组排在所有策略组最前
   reorderOutboundsPutRegionsFirst(regionGroupTagsOrdered);
+  // 重排后再清洗一次 default / 悬空引用
+  sanitizePolicyGroupMembers();
 
   input.$content = JSON.stringify(config, null, 2);
   return input;
@@ -557,6 +562,7 @@ async function operator(input, targetPlatform, context) {
     const result = [];
     const seen = new Set();
 
+    // 只收集真实存在的叶子节点 / endpoint，不把模板策略组里的「幽灵成员」当节点
     for (const tag of incomingNodeTags) {
       addNodeTag(tag);
     }
@@ -571,20 +577,15 @@ async function operator(input, targetPlatform, context) {
       addNodeTag(endpoint.tag);
     }
 
-    for (const group of originalGroups) {
-      if (!group || !Array.isArray(group.outbounds)) continue;
-
-      for (const tag of group.outbounds) {
-        if (typeof tag !== "string") continue;
-        if (originalGroupTags.has(tag)) continue;
-        addNodeTag(tag);
-      }
-    }
-
     return result;
 
     function addNodeTag(tag) {
       if (!tag || seen.has(tag)) return;
+      // 必须是已存在的 outbound/endpoint（incoming 已 push 进 config）
+      if (!existingTags.has(tag) && !findOutboundByTag(tag)) {
+        const ep = (config.endpoints || []).some((e) => e && e.tag === tag);
+        if (!ep) return;
+      }
       if (!getNodeGroupInfo(tag)) return;
 
       seen.add(tag);
@@ -668,12 +669,13 @@ async function operator(input, targetPlatform, context) {
   function resolveGroupTag(info, aliases) {
     const preferred = info.groupName;
 
+    // 优先保留模板已有短名（如 JP / 美国落地），避免改名导致其它组引用断裂
     for (const alias of aliases) {
       const existingGroup = config.outbounds.find(
         (item) => item && isPolicyGroup(item) && item.tag === alias,
       );
-      if (existingGroup) {
-        return preferred;
+      if (existingGroup && existingGroup.tag) {
+        return existingGroup.tag;
       }
     }
 
@@ -975,18 +977,40 @@ async function operator(input, targetPlatform, context) {
       for (const tag of outbound.outbounds || []) {
         if (typeof tag !== "string" || !tag) continue;
         if (!available.has(tag)) continue;
-        // 不再保留已废弃的全部节点
-        if (tag === "全部节点") continue;
+        // 禁止自引用
+        if (tag === outbound.tag) continue;
+        // 不再保留已废弃的全部节点 / Auto
+        if (tag === "全部节点" || tag === "♾️Auto Select") continue;
         next.push(tag);
       }
 
       // urltest/selector 不能为空
       if (!next.length) {
-        if (available.has("Direct")) next.push("Direct");
-        else if (available.has("direct")) next.push("direct");
+        if (available.has("Direct") && outbound.tag !== "Direct") {
+          next.push("Direct");
+        } else if (available.has("direct") && outbound.tag !== "direct") {
+          next.push("direct");
+        } else {
+          // 从其它真实节点里随便塞一个，避免空组
+          for (const t of available) {
+            if (t && t !== outbound.tag && !isPolicyGroup(findOutboundByTag(t))) {
+              next.push(t);
+              break;
+            }
+          }
+        }
       }
 
       outbound.outbounds = uniqueList(next);
+
+      // default 也必须存在
+      if (
+        outbound.type === "selector" &&
+        outbound.default &&
+        !outbound.outbounds.includes(outbound.default)
+      ) {
+        delete outbound.default;
+      }
       syncSelectorDefault(outbound);
     }
   }
