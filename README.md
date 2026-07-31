@@ -39,6 +39,28 @@ https://cdn.jsdelivr.net/gh/SenreySong/substore-scripts@main/sing-box/substore.j
 |-----|------------|------|
 | `collectionName` | `VPS-ALL` | Sub-Store 里订阅集合的名称 |
 
+### 参数怎么传（重要）
+
+远程脚本 URL **hash 传参**（Sub-Store 官方格式）：
+
+```text
+https://raw.githubusercontent.com/SenreySong/substore-scripts/main/sing-box/substore.js#collectionName=VPS-ALL&noCache
+```
+
+注意：
+
+- 第一个 `#` 后面是参数表
+- **多个参数之间用 `&`**，不要写成 `#a=1#b=2`
+- `noCache` 无值表示布尔 true（跳过脚本缓存）
+
+也可以不写在 URL 里，而在前端「参数」表单独填：
+
+| key | value |
+|-----|--------|
+| `collectionName` | `VPS-ALL` |
+
+
+
 其它行为写死在脚本内，无需再配。
 
 ## 脚本行为摘要

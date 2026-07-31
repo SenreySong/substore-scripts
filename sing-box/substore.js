@@ -1,5 +1,8 @@
 async function operator(input, targetPlatform, context) {
   // 仅接受 collectionName，其余行为写死在脚本内
+  // Sub-Store 远程脚本传参格式（注意：多个参数用 &，不要写多个 #）：
+  //   https://example.com/script.js#collectionName=VPS-ALL&noCache
+  // 也可在前端「参数」表里配置 key=collectionName
   const args =
     typeof $arguments !== "undefined" &&
     typeof $arguments === "object" &&
@@ -7,7 +10,12 @@ async function operator(input, targetPlatform, context) {
       ? $arguments
       : {};
 
-  const collectionName = args.collectionName;
+  const collectionName =
+    args.collectionName ||
+    args.collection ||
+    args.col ||
+    args.name ||
+    "";
   const MAIN_PROXY_TAG = "🌏️Main Proxy";
   const RULE_SET_DETOUR = MAIN_PROXY_TAG;
   const TEST_URL = "https://cp.cloudflare.com";
@@ -32,7 +40,14 @@ async function operator(input, targetPlatform, context) {
   };
 
   if (!collectionName) {
-    throw new Error("缺少 collectionName 参数");
+    const keys = Object.keys(args || {});
+    throw new Error(
+      "缺少 collectionName 参数。" +
+        "远程脚本 URL 正确写法：.../substore.js#collectionName=VPS-ALL&noCache" +
+        "（多个参数用 & 连接，不要写两个 #）。" +
+        "也可在 Sub-Store 参数表填 collectionName。" +
+        (keys.length ? ` 当前收到的参数键: ${keys.join(", ")}` : " 当前 $arguments 为空"),
+    );
   }
 
   if (!input || input.$content == null) {
