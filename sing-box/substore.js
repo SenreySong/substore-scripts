@@ -67,6 +67,7 @@ async function operator(input, targetPlatform, context) {
   }
 
   applySingBox114Dns(config);
+  applySingBox114CacheFile(config);
 
   const originalGroups = config.outbounds.filter(isPolicyGroup);
   const originalGroupTags = new Set(
@@ -1891,6 +1892,48 @@ async function operator(input, targetPlatform, context) {
     }
   }
 
+  // sing-box 1.14：独立 cache_file；store_rdrc 已废弃，改用 store_dns
+  // 参考：https://sing-box.sagernet.org/configuration/experimental/cache-file/
+  function applySingBox114CacheFile(targetConfig) {
+    if (!targetConfig.experimental || typeof targetConfig.experimental !== "object") {
+      targetConfig.experimental = {};
+    }
+
+    const prev =
+      targetConfig.experimental.cache_file &&
+      typeof targetConfig.experimental.cache_file === "object"
+        ? targetConfig.experimental.cache_file
+        : {};
+
+    targetConfig.experimental.cache_file = {
+      enabled: true,
+      // 空则默认 cache.db；保留模板自定义 path / cache_id
+      path: prev.path || "cache.db",
+      store_fakeip: true,
+      store_dns: true,
+    };
+
+    if (prev.cache_id) {
+      targetConfig.experimental.cache_file.cache_id = prev.cache_id;
+    }
+
+    // 废弃字段清理（1.14 起 store_rdrc → store_dns）
+    delete targetConfig.experimental.cache_file.store_rdrc;
+    delete targetConfig.experimental.cache_file.rdrc_timeout;
+
+    // clash_api 上的旧 cache 字段（1.8 前）若残留则去掉
+    if (
+      targetConfig.experimental.clash_api &&
+      typeof targetConfig.experimental.clash_api === "object"
+    ) {
+      delete targetConfig.experimental.clash_api.cache_file;
+      delete targetConfig.experimental.clash_api.cache_id;
+      delete targetConfig.experimental.clash_api.store_mode;
+      delete targetConfig.experimental.clash_api.store_selected;
+      delete targetConfig.experimental.clash_api.store_fakeip;
+    }
+  }
+
   function applySingBox114Dns(targetConfig) {
     if (!targetConfig.dns || typeof targetConfig.dns !== "object") {
       throw new Error("配置模板缺少 dns 配置");
@@ -1941,7 +1984,11 @@ async function operator(input, targetPlatform, context) {
 
     fakeIpRule.query_type = ["A", "AAAA"];
     fakeIpRule.action = "route";
-    fakeIpRule.disable_cache = true;
+    // 与 cache_file.store_fakeip / store_dns 配合，允许缓存
+    delete fakeIpRule.disable_cache;
+
+    // 1.14：DNS cache 按 transport 分键，independent_cache 已废弃
+    delete targetConfig.dns.independent_cache;
 
     targetConfig.dns.strategy = "prefer_ipv4";
 

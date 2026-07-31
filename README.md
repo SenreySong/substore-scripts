@@ -49,6 +49,7 @@ https://cdn.jsdelivr.net/gh/SenreySong/substore-scripts@main/sing-box/substore.j
 - 地区组默认类型：`selector`。
 - 广告 / QUIC 拦截使用 `action: reject` + `method: drop`。
 - 美国子组展示名：优化 / **落地** / 家宽（兼容旧名「直连」）。
+- 按 1.14 开启 `experimental.cache_file`（`store_fakeip` + `store_dns`）。
 
 ## 本地开发
 
