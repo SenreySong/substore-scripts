@@ -1,4 +1,5 @@
 async function operator(input, targetPlatform, context) {
+  // 仅接受 collectionName，其余行为写死在脚本内
   const args =
     typeof $arguments !== "undefined" &&
     typeof $arguments === "object" &&
@@ -6,22 +7,10 @@ async function operator(input, targetPlatform, context) {
       ? $arguments
       : {};
 
-  const {
-    collectionName,
-    includeUnsupportedProxy = true,
-    groupType = "selector",
-    testUrl = "https://cp.cloudflare.com",
-    urltestUseNodeTags = true,
-    excludeGroups = [],
-    preserveOutbounds = [],
-    groupTagPrefix = "",
-    // 与远端模板主选择器对齐，不再单独建 Proxy
-    mainProxyTag = "🌏️Main Proxy",
-    ruleSetDetour,
-  } = args;
-
-  const MAIN_PROXY_TAG = mainProxyTag || "🌏️Main Proxy";
-  const RULE_SET_DETOUR = ruleSetDetour || MAIN_PROXY_TAG;
+  const collectionName = args.collectionName;
+  const MAIN_PROXY_TAG = "🌏️Main Proxy";
+  const RULE_SET_DETOUR = MAIN_PROXY_TAG;
+  const TEST_URL = "https://cp.cloudflare.com";
 
   // 逻辑名 → 实际 outbound tag（优先复用模板已有组）
   // 不再使用 ♾️Auto Select / 全部节点 全节点聚合组
@@ -84,8 +73,6 @@ async function operator(input, targetPlatform, context) {
     originalGroups.map((item) => item && item.tag).filter(Boolean),
   );
 
-  const excluded = new Set(Array.isArray(excludeGroups) ? excludeGroups : []);
-
   const preserveSet = new Set([
     "Direct",
     "DIRECT",
@@ -103,7 +90,6 @@ async function operator(input, targetPlatform, context) {
     "GLOBAL",
     "COMPATIBLE",
     "Bittorrent",
-    ...(Array.isArray(preserveOutbounds) ? preserveOutbounds : []),
   ]);
 
   const generated = await produceArtifact({
@@ -111,8 +97,7 @@ async function operator(input, targetPlatform, context) {
     name: collectionName,
     platform: "sing-box",
     produceOpts: {
-      "include-unsupported-proxy":
-        includeUnsupportedProxy === true || includeUnsupportedProxy === "true",
+      "include-unsupported-proxy": true,
     },
   });
 
@@ -242,7 +227,7 @@ async function operator(input, targetPlatform, context) {
   ]);
 
   for (const group of originalGroups) {
-    if (!group || excluded.has(group.tag)) continue;
+    if (!group) continue;
     if (generatedGroupTagSetAll.has(group.tag)) continue;
     if (legacySyncedTags.has(group.tag)) continue;
     if (isUSParentTag(group.tag)) continue;
@@ -256,10 +241,9 @@ async function operator(input, targetPlatform, context) {
       }
     }
 
+    // urltest 组填节点 tag；selector 组填地区策略组
     const replacements =
-      group.type === "urltest" && urltestUseNodeTags !== false
-        ? allNodeTags
-        : regionGroupTagsOrdered;
+      group.type === "urltest" ? allNodeTags : regionGroupTagsOrdered;
 
     group.outbounds = uniqueList([...preserved, ...replacements]);
     syncSelectorDefault(group);
@@ -398,7 +382,7 @@ async function operator(input, targetPlatform, context) {
     if (!Array.isArray(subgroupTags) || subgroupTags.length === 0) return;
 
     const aliases = uniqueList([
-      `${groupTagPrefix}US`,
+      "US",
       "US",
       "🇺🇸 US",
       "🇺🇸US",
@@ -428,7 +412,7 @@ async function operator(input, targetPlatform, context) {
 
     group.outbounds = uniqueList([...preserved, ...subgroupTags]);
     if (group.type === "urltest") {
-      group.url = testUrl;
+      group.url = TEST_URL;
     }
     syncSelectorDefault(group);
   }
@@ -658,22 +642,18 @@ async function operator(input, targetPlatform, context) {
 
       group.outbounds = uniqueList(nodeTags);
       if (group.type === "urltest") {
-        group.url = testUrl;
+        group.url = TEST_URL;
       }
       syncSelectorDefault(group);
       return group;
     }
 
     group = {
-      type: groupType === "urltest" ? "urltest" : "selector",
+      type: "selector",
       tag: nextTag,
       outbounds: uniqueList(nodeTags),
       interrupt_exist_connections: false,
     };
-
-    if (group.type === "urltest") {
-      group.url = testUrl;
-    }
 
     syncSelectorDefault(group);
 
@@ -685,7 +665,7 @@ async function operator(input, targetPlatform, context) {
   }
 
   function resolveGroupTag(info, aliases) {
-    const preferred = `${groupTagPrefix}${info.groupName}`;
+    const preferred = info.groupName;
 
     for (const alias of aliases) {
       const existingGroup = config.outbounds.find(
@@ -711,14 +691,14 @@ async function operator(input, targetPlatform, context) {
 
   function getGroupAliases(info) {
     const aliases = [];
-    const baseTag = `${groupTagPrefix}${info.groupName}`;
+    const baseTag = info.groupName;
     const regionCode = info.regionCode || normalizeCountryCode(info.groupName);
 
     aliases.push(baseTag);
 
     if (Array.isArray(info.extraAliases)) {
       for (const alias of info.extraAliases) {
-        aliases.push(`${groupTagPrefix}${alias}`);
+        aliases.push(alias);
         aliases.push(alias);
       }
     }
@@ -1246,7 +1226,7 @@ async function operator(input, targetPlatform, context) {
 
       if (group.type === "urltest") {
         group.outbounds = uniqueList(nodeTags);
-        group.url = testUrl;
+        group.url = TEST_URL;
       } else {
         group.outbounds = uniqueList([
           ...preserved,
