@@ -613,29 +613,8 @@ async function operator(input, targetPlatform, context) {
     }
   }
 
-  function sortNodeTags(info, nodeTags) {
-    const list = [...nodeTags];
-
-    list.sort((a, b) => {
-      if (info && info.usBucket === "opt") {
-        const rank = (n) => {
-          const s = String(n || "").toLowerCase();
-          if (/\bpro\b/.test(s)) return 1;
-          if (/\beb\b/.test(s)) return 2;
-          if (/megabox/.test(s)) return 3;
-          return 4;
-        };
-        const d = rank(a) - rank(b);
-        if (d !== 0) return d;
-      }
-
-      return String(a).localeCompare(String(b), undefined, {
-        numeric: true,
-        sensitivity: "base",
-      });
-    });
-
-    return list;
+  function sortNodeTags(_info, nodeTags) {
+    return sortRegionNodeTags(nodeTags);
   }
 
   function collectAllNodeTags() {
@@ -2668,6 +2647,142 @@ const COUNTRY_CODE_ALIASES = {
 
 // 仅这些国家单独建组；德/港及其余全部进 Other
 const FIXED_REGION_CODES = new Set(["JP", "SG", "TW", "US"]);
+
+// ─── 地区组内节点排序（大小写不敏感） ─────────────────────────
+// 优先级：
+// 1) 含「赠」的最后
+// 2) 地区码后首段为 DL/V6，或后续独立段为 DL/V6 的靠前
+// 3) 机场/机房代码（地区后首个非线路/非供应商段）按字符序
+// 4) 供应商：DMIT → Megabox/BWH（等同）→ Lightlayer → 其它
+// 5) 全名自然序（同名带序号 01/02…）
+function sortRegionNodeTags(nodeTags) {
+  const list = Array.isArray(nodeTags) ? [...nodeTags] : [];
+  list.sort(compareRegionNodeTags);
+  return list;
+}
+
+function compareRegionNodeTags(a, b) {
+  const ka = buildRegionNodeSortKey(a);
+  const kb = buildRegionNodeSortKey(b);
+
+  if (ka.gift !== kb.gift) return ka.gift - kb.gift;
+  if (ka.dlV6 !== kb.dlV6) return ka.dlV6 - kb.dlV6;
+  if (ka.airport !== kb.airport) {
+    return ka.airport.localeCompare(kb.airport, undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+  }
+  if (ka.provider !== kb.provider) return ka.provider - kb.provider;
+
+  return ka.nameKey.localeCompare(kb.nameKey, undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+}
+
+function buildRegionNodeSortKey(raw) {
+  const text = String(raw || "").trim();
+  const gift = /赠/.test(text) ? 1 : 0;
+  const cleaned = normalizeNodeNameForSort(text);
+  // 方括号内的连字符不拆（如 [E-DMIT] / [DMIT-P]）
+  const parts = splitNodeNameParts(cleaned);
+  const afterRegion = parts.length > 1 ? parts.slice(1) : parts.slice();
+
+  const dlV6 = hasDlOrV6Priority(afterRegion) ? 0 : 1;
+  const airport = extractAirportCodeForSort(afterRegion);
+  const provider = getProviderSortRank(cleaned);
+  const nameKey = cleaned.toLowerCase();
+
+  return { gift, dlV6, airport, provider, nameKey };
+}
+
+function normalizeNodeNameForSort(raw) {
+  let s = String(raw || "").trim();
+  // [赠] / 赠送 标记
+  s = s.replace(/\[赠\]/gi, " ");
+  s = s.replace(/赠送?/g, " ");
+  // 国旗 emoji（区域指示符成对）
+  s = s.replace(/[\u{1F1E6}-\u{1F1FF}]{2}/gu, " ");
+  s = s.replace(/\s+/g, " ").trim();
+  // 常见形态：🇯🇵JP-xxx / 🇯🇵 JP-xxx
+  s = s.replace(/\s*-\s*/g, "-");
+  return s.trim();
+}
+
+function splitNodeNameParts(cleaned) {
+  const text = String(cleaned || "").trim();
+  if (!text) return [];
+
+  const parts = [];
+  let buf = "";
+  let depth = 0;
+
+  for (const ch of text) {
+    if (ch === "[") depth += 1;
+    if (ch === "-" && depth === 0) {
+      if (buf) parts.push(buf);
+      buf = "";
+      continue;
+    }
+    buf += ch;
+    if (ch === "]" && depth > 0) depth -= 1;
+  }
+
+  if (buf) parts.push(buf);
+  return parts;
+}
+
+function stripSortTokenDecor(token) {
+  return String(token || "")
+    .replace(/^\[+/, "")
+    .replace(/\]+$/, "")
+    .trim();
+}
+
+function isDlOrV6Token(token) {
+  const t = stripSortTokenDecor(token).toLowerCase();
+  return t === "dl" || t === "v6";
+}
+
+function isBracketToken(token) {
+  return /^\[[^\]]+\]$/.test(String(token || "").trim());
+}
+
+function isBareProviderToken(token) {
+  const t = stripSortTokenDecor(token).toLowerCase();
+  return /^(bwh|dmit|e-dmit|p-dmit|dmit-e|dmit-p|lightlayer|megabox|mega\s*box)$/.test(
+    t,
+  );
+}
+
+function hasDlOrV6Priority(afterRegion) {
+  if (!Array.isArray(afterRegion) || afterRegion.length === 0) return false;
+  // 地区后第一段就是 DL/V6
+  if (isDlOrV6Token(afterRegion[0])) return true;
+  // 地区-机场-DL / 地区-*-V6 等：任意独立段为 DL/V6
+  return afterRegion.some((part) => isDlOrV6Token(part));
+}
+
+function extractAirportCodeForSort(afterRegion) {
+  if (!Array.isArray(afterRegion) || afterRegion.length === 0) return "";
+
+  const first = afterRegion[0];
+  if (isDlOrV6Token(first)) return "";
+  if (isBracketToken(first)) return "";
+  if (isBareProviderToken(first)) return "";
+
+  return stripSortTokenDecor(first).toLowerCase();
+}
+
+function getProviderSortRank(name) {
+  const s = String(name || "").toLowerCase();
+  if (/dmit/.test(s)) return 1;
+  // BWH 与 Megabox 等同
+  if (/\bbwh\b|megabox|mega\s*box/.test(s)) return 2;
+  if (/lightlayer/.test(s)) return 3;
+  return 10;
+}
 
 const KNOWN_REGION_CODES = new Set([
   "AE",
