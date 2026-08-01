@@ -356,7 +356,7 @@ async function operator(input, targetPlatform, context) {
   input.$content = JSON.stringify(config, null, 2);
   return input;
 
-  // ─── 固定地区组：日/新/台/德/港/美×3，其余 Other（不再做赠送组） ───
+  // ─── 固定地区组：日/新/台/美×3，德港及其余进 Other（不再做赠送组） ───
 
   function getUSSubgroupDefs() {
     return {
@@ -423,14 +423,6 @@ async function operator(input, targetPlatform, context) {
       TW: {
         groupName: "🇹🇼 台湾策略组",
         aliases: ["🇹🇼 台湾策略组", "台湾策略组", "台湾", "台灣", "TW"],
-      },
-      DE: {
-        groupName: "🇩🇪德国策略组",
-        aliases: ["🇩🇪德国策略组", "🇩🇪 德国策略组", "德国策略组", "德国", "DE"],
-      },
-      HK: {
-        groupName: "🇭🇰 香港策略组",
-        aliases: ["🇭🇰 香港策略组", "香港策略组", "香港", "HK"],
       },
     };
 
@@ -516,8 +508,6 @@ async function operator(input, targetPlatform, context) {
       "🇺🇸 美国优化策略组",
       "🇺🇸 美国落地策略组",
       "🇺🇸 美国家宽策略组",
-      "🇩🇪德国策略组",
-      "🇭🇰 香港策略组",
       "🌐 Other",
     ];
 
@@ -558,7 +548,12 @@ async function operator(input, targetPlatform, context) {
       "台湾",
       "德國",
       "德国",
+      "🇩🇪德国策略组",
+      "🇩🇪 德国策略组",
+      "德国策略组",
       "香港",
+      "🇭🇰 香港策略组",
+      "香港策略组",
       "赠送",
       "🇭🇰 赠送策略组",
       "赠送策略组",
@@ -2671,8 +2666,8 @@ const COUNTRY_CODE_ALIASES = {
   SGP: "SG",
 };
 
-// 仅这些国家单独建组；其余全部进 Other
-const FIXED_REGION_CODES = new Set(["JP", "SG", "TW", "DE", "HK", "US"]);
+// 仅这些国家单独建组；德/港及其余全部进 Other
+const FIXED_REGION_CODES = new Set(["JP", "SG", "TW", "US"]);
 
 const KNOWN_REGION_CODES = new Set([
   "AE",
