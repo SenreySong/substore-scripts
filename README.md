@@ -68,12 +68,13 @@ https://raw.githubusercontent.com/SenreySong/substore-scripts/main/sing-box/subs
 ## 脚本行为摘要
 
 - 从集合 `collectionName` 拉取节点并写入模板。
-- **不维护** `♾️Auto Select` 全节点 urltest 组。
-- **Main Proxy** 成员：地区组 + Direct；**default = 成员列表第一项**。
+- **`♾️Auto Select`**：仅挂 **新加坡 + 美国优化** 节点的 urltest（非全节点，降低 Windows TUN 风险）；专供 **rule_set / dashboard 下载**。
+- **Main Proxy** 成员：地区组 + Direct（不挂 Auto Select）；**default = 成员列表第一项**。
 - 地区组默认类型：`selector`。
 - 广告 / QUIC 拦截使用 `action: reject` + `method: drop`。
 - 美国子组展示名：优化 / **落地** / 家宽（兼容旧名「直连」）。
 - 按 1.14 开启 `experimental.cache_file`（`store_fakeip` + `store_dns`）。
+- 关闭 Clash API；开启官方 `services` API + dashboard（`127.0.0.1:9090`）。
 - TUN 显式 `dns_mode: hijack` + `dns_address`（1.14.0-alpha.21 接口 DNS 劫持），并确保路由 `hijack-dns`。
 - TUN IPv6 使用通用 ULA `fd00::1/126`；`route_exclude_address` 绕过常见局域网/链路本地段。
 

@@ -17,8 +17,11 @@ async function operator(input, targetPlatform, context) {
     args.name ||
     "";
   const MAIN_PROXY_TAG = "🌏️Main Proxy";
-  const RULE_SET_DETOUR = MAIN_PROXY_TAG;
+  // 仅新加坡 + 美国优化节点的 urltest；规则集 / 面板下载走它（非全节点，降低 Windows TUN 风险）
+  const AUTO_SELECT_TAG = "♾️Auto Select";
   const TEST_URL = "https://cp.cloudflare.com";
+  // 运行时由 ensureAutoSelectGroup 决定：有节点则 Auto Select，否则 Direct
+  let RULE_SET_DETOUR = AUTO_SELECT_TAG;
   // TUN 常量必须在 applySingBox114Dns 调用前初始化（避免 TDZ）
   const TUN_IPV4_DEFAULT = "172.19.0.1/30";
   const TUN_IPV6_DEFAULT = "fd00::1/126";
@@ -32,9 +35,8 @@ async function operator(input, targetPlatform, context) {
   ];
 
   // 逻辑名 → 实际 outbound tag（优先复用模板已有组）
-  // 不再使用 ♾️Auto Select / 全部节点 全节点聚合组
   const appTagMap = {
-    allNodes: "",
+    allNodes: AUTO_SELECT_TAG,
     mainProxy: MAIN_PROXY_TAG,
     openai: "OpenAI",
     ai: "AI",
@@ -261,6 +263,17 @@ async function operator(input, targetPlatform, context) {
   const regionGroupTagsOrdered = orderRegionGroupTags(generatedGroupTags);
 
   ensureBuiltinOutbounds();
+
+  // Auto Select：只挂新加坡 + 美国优化，供 rule_set / dashboard 下载
+  const autoSelectGroup = ensureAutoSelectGroup();
+  if (autoSelectGroup) {
+    RULE_SET_DETOUR = AUTO_SELECT_TAG;
+    appTagMap.allNodes = AUTO_SELECT_TAG;
+  } else {
+    RULE_SET_DETOUR = "Direct";
+    appTagMap.allNodes = "";
+  }
+
   const managedAppGroupTags = ensureGfsAppGroups(
     regionGroupTagsOrdered,
     allNodeTags,
@@ -269,9 +282,10 @@ async function operator(input, targetPlatform, context) {
   const generatedGroupTagSetAll = new Set([
     ...generatedGroupTagSet,
     ...managedAppGroupTags,
+    ...(autoSelectGroup ? [AUTO_SELECT_TAG] : []),
   ]);
 
-  // 已由 ensureGfsAppGroups / syncExtra 处理的组，避免二次灌入
+  // 已由 ensureGfsAppGroups / syncExtra / Auto Select 处理的组，避免二次灌入
   const legacySyncedTags = new Set([
     MAIN_PROXY_TAG,
     appTagMap.mainProxy,
@@ -292,7 +306,7 @@ async function operator(input, targetPlatform, context) {
     "📺Bilibili",
     "🎙️Discord",
     "🎨Pixiv",
-    "♾️Auto Select",
+    AUTO_SELECT_TAG,
     "全部节点",
   ]);
 
@@ -320,18 +334,23 @@ async function operator(input, targetPlatform, context) {
   }
 
   applyGfsRouteAndRulesets(RULE_SET_DETOUR);
+  applyDownloadDetourToDashboard(RULE_SET_DETOUR);
 
-  // 清洗：删 Auto Select / 全部节点，并去掉悬空引用（必须在分组都建完后）
+  // 清洗：删「全部节点」、保留 Auto Select，去掉悬空引用
   removeUnusedAllNodesGroup();
   removeClashGlobalGroup();
-  removeAutoSelectGroup();
   sanitizePolicyGroupMembers();
   // 国家/地区策略组排在所有策略组最前
   reorderOutboundsPutRegionsFirst(regionGroupTagsOrdered);
   // 重排后再清洗一次 default / 悬空引用
   sanitizePolicyGroupMembers();
   // 最终硬校验：任何策略组不得再引用不存在的 tag / 不得为空
+  // （不再删除非空的 Auto Select）
   stripBrokenPolicyGroups(config);
+  // strip 之后再确保 Auto Select 仍在且成员正确，并统一下载 detour
+  const autoAfterStrip = ensureAutoSelectGroup();
+  RULE_SET_DETOUR = autoAfterStrip ? AUTO_SELECT_TAG : "Direct";
+  syncAllRemoteDownloadDetours(RULE_SET_DETOUR);
   sanitizePolicyGroupMembers();
 
   input.$content = JSON.stringify(config, null, 2);
@@ -942,42 +961,95 @@ async function operator(input, targetPlatform, context) {
     return uniqueList(result);
   }
 
-  // 彻底移除 ♾️Auto Select，并把引用改写到 Main Proxy
-  function removeAutoSelectGroup() {
-    const autoTag = "♾️Auto Select";
-    const replacement = MAIN_PROXY_TAG;
-
-    for (const outbound of config.outbounds) {
-      if (!outbound || !Array.isArray(outbound.outbounds)) continue;
-      outbound.outbounds = outbound.outbounds.filter((tag) => tag !== autoTag);
-      if (outbound.default === autoTag) {
-        if (outbound.outbounds.includes(replacement)) {
-          outbound.default = replacement;
-        }
-        syncSelectorDefault(outbound);
+  // 收集 Auto Select 成员：仅新加坡 + 美国优化（不含赠送以外的其它地区）
+  function collectAutoSelectNodeTags() {
+    const result = [];
+    for (const tag of collectExistingLeafProxyTags()) {
+      const info = getNodeGroupInfo(tag);
+      if (!info || info.isOther) continue;
+      if (info.regionCode === "SG") {
+        result.push(tag);
+        continue;
+      }
+      if (info.regionCode === "US" && info.usBucket === "opt") {
+        result.push(tag);
       }
     }
+    return uniqueList(result);
+  }
 
-    for (const rule of config.route.rules || []) {
-      if (rule && rule.outbound === autoTag) {
-        rule.outbound = replacement;
-      }
+  // 维护 ♾️Auto Select（urltest）：只挂 SG + 美国优化，专供规则/面板下载
+  function ensureAutoSelectGroup() {
+    const members = collectAutoSelectNodeTags();
+    if (!members.length) {
+      // 没有可用节点则移除空组，避免 missing tags
+      config.outbounds = config.outbounds.filter(
+        (item) => !(item && item.tag === AUTO_SELECT_TAG),
+      );
+      existingTags.delete(AUTO_SELECT_TAG);
+      originalGroupTags.delete(AUTO_SELECT_TAG);
+      appTagMap.allNodes = "";
+      return null;
     }
 
-    for (const server of Array.isArray(config.dns && config.dns.servers)
-      ? config.dns.servers
+    let group = findOutboundByTag(AUTO_SELECT_TAG);
+    if (!group) {
+      group = {
+        type: "urltest",
+        tag: AUTO_SELECT_TAG,
+        outbounds: members,
+        url: TEST_URL,
+        interval: "3m",
+        tolerance: 150,
+        interrupt_exist_connections: false,
+      };
+      config.outbounds.push(group);
+      existingTags.add(AUTO_SELECT_TAG);
+      originalGroupTags.add(AUTO_SELECT_TAG);
+    } else {
+      group.type = "urltest";
+      group.outbounds = members;
+      group.url = TEST_URL;
+      if (!group.interval) group.interval = "3m";
+      if (group.tolerance == null) group.tolerance = 150;
+      group.interrupt_exist_connections = false;
+      delete group.default;
+    }
+
+    appTagMap.allNodes = AUTO_SELECT_TAG;
+    return group;
+  }
+
+  // 统一 remote rule_set + dashboard 的下载 detour
+  function syncAllRemoteDownloadDetours(detour) {
+    const d = detour || "Direct";
+    for (const item of Array.isArray(config.route.rule_set)
+      ? config.route.rule_set
       : []) {
-      if (server && server.detour === autoTag) {
-        server.detour = replacement;
+      if (!item || item.type !== "remote") continue;
+      delete item.download_detour;
+      item.http_client = buildRuleSetHttpClient(d);
+    }
+    applyDownloadDetourToDashboard(d);
+  }
+
+  function applyDownloadDetourToDashboard(detour) {
+    const d = detour || "Direct";
+    if (!Array.isArray(config.services)) return;
+
+    for (const svc of config.services) {
+      if (!svc || svc.type !== "api") continue;
+
+      if (svc.dashboard === true || svc.dashboard == null) {
+        svc.dashboard = {
+          enabled: true,
+          http_client: buildRuleSetHttpClient(d),
+        };
+      } else if (typeof svc.dashboard === "object") {
+        svc.dashboard.enabled = true;
+        svc.dashboard.http_client = buildRuleSetHttpClient(d);
       }
     }
-
-    config.outbounds = config.outbounds.filter(
-      (item) => !(item && item.tag === autoTag),
-    );
-    existingTags.delete(autoTag);
-    originalGroupTags.delete(autoTag);
-    appTagMap.allNodes = "";
   }
 
   // 去掉无用的「全部节点」组，引用改写到 Main Proxy
@@ -1058,13 +1130,20 @@ async function operator(input, targetPlatform, context) {
         if (!available.has(tag)) continue;
         // 禁止自引用
         if (tag === outbound.tag) continue;
-        // 不再保留已废弃的全部节点 / Auto
-        if (tag === "全部节点" || tag === "♾️Auto Select") continue;
+        // 业务策略组不挂 Auto Select / 全部节点（Auto 仅用于下载）
+        if (tag === "全部节点") continue;
+        if (tag === AUTO_SELECT_TAG && outbound.tag !== AUTO_SELECT_TAG) {
+          continue;
+        }
         next.push(tag);
       }
 
       // urltest/selector 不能为空
       if (!next.length) {
+        if (outbound.tag === AUTO_SELECT_TAG) {
+          // Auto 空了由 ensureAutoSelectGroup 处理，这里不塞 Direct 进 urltest
+          continue;
+        }
         if (available.has("Direct") && outbound.tag !== "Direct") {
           next.push("Direct");
         } else if (available.has("direct") && outbound.tag !== "direct") {
@@ -1164,24 +1243,20 @@ async function operator(input, targetPlatform, context) {
     return group;
   }
 
-  // 删除空策略组 / 悬空引用，并清掉 ♾️Auto Select
+  // 删除空策略组 / 悬空引用；非空 Auto Select 保留
   function stripBrokenPolicyGroups(targetConfig) {
     if (!targetConfig || !Array.isArray(targetConfig.outbounds)) return;
 
-    const AUTO = "♾️Auto Select";
+    const AUTO = AUTO_SELECT_TAG;
     const available = () =>
       new Set(
         targetConfig.outbounds.map((item) => item && item.tag).filter(Boolean),
       );
 
-    // 先删 Auto Select 本体
-    targetConfig.outbounds = targetConfig.outbounds.filter(
-      (item) => !(item && item.tag === AUTO),
-    );
-
-    // 清引用
+    // 业务组里不要挂 Auto（Auto 仅下载用）；Auto 自身成员保留
     for (const outbound of targetConfig.outbounds) {
       if (!outbound || !Array.isArray(outbound.outbounds)) continue;
+      if (outbound.tag === AUTO) continue;
       outbound.outbounds = outbound.outbounds.filter((t) => t && t !== AUTO);
       if (outbound.default === AUTO) delete outbound.default;
     }
@@ -1209,11 +1284,15 @@ async function operator(input, targetPlatform, context) {
             continue;
           }
           outbound.outbounds = members;
-          if (outbound.default && !members.includes(outbound.default)) {
-            outbound.default = members[0];
-          }
-          if (outbound.type === "selector" && !outbound.default) {
-            outbound.default = members[0];
+          if (outbound.type === "urltest") {
+            delete outbound.default;
+          } else {
+            if (outbound.default && !members.includes(outbound.default)) {
+              outbound.default = members[0];
+            }
+            if (!outbound.default) {
+              outbound.default = members[0];
+            }
           }
         }
         nextOutbounds.push(outbound);
@@ -1273,10 +1352,7 @@ async function operator(input, targetPlatform, context) {
     const tags = new Set();
     const regions = uniqueList(regionTags);
 
-    // 不维护 ♾️Auto Select；主选择器仅地区组 + Direct
-    appTagMap.allNodes = "";
-
-    // 主选择器：模板已有则复用（地区组优先，再 Direct）
+    // 主选择器：仅地区组 + Direct（不挂 Auto Select，避免业务分流测速风暴）
     const mainProxyMembers = uniqueList([
       ...regions,
       "direct",
@@ -2265,6 +2341,7 @@ async function operator(input, targetPlatform, context) {
         listen_port: 9090,
         secret: "",
         access_control_allow_private_network: true,
+        // 面板资源下载 detour 稍后由 syncAllRemoteDownloadDetours 统一写入
         dashboard: true,
       };
       targetConfig.services.push(api);
@@ -2278,19 +2355,10 @@ async function operator(input, targetPlatform, context) {
         api.access_control_allow_private_network = true;
       }
 
-      // dashboard: true | { enabled: true, ... }
       if (api.dashboard === false || api.dashboard == null) {
         api.dashboard = true;
       } else if (typeof api.dashboard === "object") {
         api.dashboard.enabled = true;
-        // 下载面板可走主代理（与 rule_set 一致）
-        if (!api.dashboard.http_client) {
-          api.dashboard.http_client = {
-            engine: "go",
-            version: 2,
-            detour: MAIN_PROXY_TAG,
-          };
-        }
       }
     }
   }
