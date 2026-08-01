@@ -105,6 +105,7 @@ async function operator(input, targetPlatform, context) {
 
   applySingBox114Dns(config);
   applySingBox114CacheFile(config);
+  applySingBox114ApiDashboard(config);
 
   const originalGroups = config.outbounds.filter(isPolicyGroup);
   const originalGroupTags = new Set(
@@ -2235,17 +2236,62 @@ async function operator(input, targetPlatform, context) {
     // 废弃字段清理（1.14 起 store_rdrc → store_dns）
     delete targetConfig.experimental.cache_file.store_rdrc;
     delete targetConfig.experimental.cache_file.rdrc_timeout;
+  }
 
-    // clash_api 上的旧 cache 字段（1.8 前）若残留则去掉
-    if (
-      targetConfig.experimental.clash_api &&
-      typeof targetConfig.experimental.clash_api === "object"
-    ) {
-      delete targetConfig.experimental.clash_api.cache_file;
-      delete targetConfig.experimental.clash_api.cache_id;
-      delete targetConfig.experimental.clash_api.store_mode;
-      delete targetConfig.experimental.clash_api.store_selected;
-      delete targetConfig.experimental.clash_api.store_fakeip;
+  // 关闭 Clash API，开启 sing-box 1.14 官方 API + Dashboard
+  // 文档：https://sing-box.sagernet.org/configuration/service/api/
+  function applySingBox114ApiDashboard(targetConfig) {
+    if (!targetConfig.experimental || typeof targetConfig.experimental !== "object") {
+      targetConfig.experimental = {};
+    }
+
+    // 彻底关掉旧 Clash API（含 external_controller / external_ui）
+    delete targetConfig.experimental.clash_api;
+
+    if (!Array.isArray(targetConfig.services)) {
+      targetConfig.services = [];
+    }
+
+    // 去掉非 api 以外的残留时不要误删其它 service；只保证有一条 type=api
+    let api = targetConfig.services.find(
+      (item) => item && item.type === "api",
+    );
+
+    if (!api) {
+      api = {
+        type: "api",
+        tag: "sing-box-api",
+        listen: "127.0.0.1",
+        listen_port: 9090,
+        secret: "",
+        access_control_allow_private_network: true,
+        dashboard: true,
+      };
+      targetConfig.services.push(api);
+    } else {
+      if (!api.tag) api.tag = "sing-box-api";
+      if (!api.listen) api.listen = "127.0.0.1";
+      if (api.listen_port == null || api.listen_port === "") {
+        api.listen_port = 9090;
+      }
+      if (api.access_control_allow_private_network == null) {
+        api.access_control_allow_private_network = true;
+      }
+
+      // dashboard: true | { enabled: true, ... }
+      if (api.dashboard === false || api.dashboard == null) {
+        api.dashboard = true;
+      } else if (typeof api.dashboard === "object") {
+        api.dashboard.enabled = true;
+        // 下载面板可走主代理（与 rule_set 一致）
+        if (!api.dashboard.http_client) {
+          api.dashboard.http_client = {
+            engine: "go",
+            version: 2,
+            detour: MAIN_PROXY_TAG,
+          };
+        }
+      }
     }
   }
 
