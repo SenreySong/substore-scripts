@@ -2159,6 +2159,12 @@ async function operator(input, targetPlatform, context) {
     }
   }
 
+  // mixed 代理入站改为 0.0.0.0（全接口），不再仅 127.0.0.1
+  function applyMixedInboundListenAll(inbound) {
+    if (!inbound || inbound.type !== "mixed") return;
+    inbound.listen = "0.0.0.0";
+  }
+
   function applyTunAddressAndBypass(inbound) {
     let addresses = Array.isArray(inbound.address)
       ? inbound.address.map(String)
@@ -2426,7 +2432,15 @@ async function operator(input, targetPlatform, context) {
     for (const inbound of Array.isArray(targetConfig.inbounds)
       ? targetConfig.inbounds
       : []) {
-      if (!inbound || inbound.type !== "tun") continue;
+      if (!inbound || typeof inbound !== "object") continue;
+
+      // mixed 入站：监听全部地址，供局域网设备使用
+      if (inbound.type === "mixed") {
+        applyMixedInboundListenAll(inbound);
+        continue;
+      }
+
+      if (inbound.type !== "tun") continue;
 
       applyTunAddressAndBypass(inbound);
 

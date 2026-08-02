@@ -79,6 +79,7 @@ https://raw.githubusercontent.com/SenreySong/substore-scripts/main/sing-box/subs
 - 关闭 Clash API；开启官方 `services` API + dashboard（`127.0.0.1:9090`）。
 - TUN 显式 `dns_mode: hijack` + `dns_address`（1.14.0-alpha.21 接口 DNS 劫持），并确保路由 `hijack-dns`。
 - TUN IPv6 使用通用 ULA `fd00::1/126`；`route_exclude_address` 绕过常见局域网/链路本地段。
+- **mixed 入站** `listen` 强制为 `0.0.0.0`（全接口，不仅本机）。
 
 ## 本地开发
 
