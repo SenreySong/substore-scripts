@@ -37,7 +37,8 @@ https://cdn.jsdelivr.net/gh/SenreySong/substore-scripts@main/sing-box/substore.j
 
 | key | value 示例 | 说明 |
 |-----|------------|------|
-| `collectionName` | `VPS-ALL` | Sub-Store 里订阅集合的名称 |
+| `collectionName` | `VPS-ALL` | Sub-Store 里订阅集合的名称（必填） |
+| `interruptExistConnections` | `1` / `0` | 切换节点/策略组时是否打断既有连接；默认 `1`（开启） |
 
 ### 参数怎么传（必读）
 
@@ -63,7 +64,7 @@ https://raw.githubusercontent.com/SenreySong/substore-scripts/main/sing-box/subs
 
 若坚持用「参数」表，必须把脚本模式改成**非 link**（把脚本正文贴进内容框 / script 模式），此时 `arguments` 表才会生效。
 
-其它行为写死在脚本内，无需再配。
+其它行为写死在脚本内；仅 `collectionName` 必填，`interruptExistConnections` 可选。
 
 ## 脚本行为摘要
 
@@ -71,6 +72,7 @@ https://raw.githubusercontent.com/SenreySong/substore-scripts/main/sing-box/subs
 - **`♾️Auto Select`**：仅挂 **新加坡 + 美国优化** 节点的 urltest（非全节点，降低 Windows TUN 风险）；专供 **rule_set / dashboard 下载**。
 - **Main Proxy** 成员：地区组 + Direct（不挂 Auto Select）；**default = 成员列表第一项**。
 - 地区组默认类型：`selector`。
+- 默认开启 `interrupt_exist_connections`：切换节点/策略组时打断既有连接（可用参数关闭）。
 - 广告 / QUIC 拦截使用 `action: reject` + `method: drop`。
 - 美国子组展示名：优化 / **落地** / 家宽（兼容旧名「直连」）。
 - 按 1.14 开启 `experimental.cache_file`（`store_fakeip` + `store_dns`）。

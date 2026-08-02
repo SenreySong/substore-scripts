@@ -20,6 +20,14 @@ async function operator(input, targetPlatform, context) {
   // 仅新加坡 + 美国优化节点的 urltest；规则集 / 面板下载走它（非全节点，降低 Windows TUN 风险）
   const AUTO_SELECT_TAG = "♾️Auto Select";
   const TEST_URL = "https://cp.cloudflare.com";
+  // 切换节点 / 策略组时打断既有连接（sing-box: interrupt_exist_connections）
+  // 可被 URL 参数覆盖：interruptExistConnections=0/1 或 true/false
+  const INTERRUPT_EXIST_CONNECTIONS = parseBoolish(
+    args.interruptExistConnections ??
+      args.interrupt_exist_connections ??
+      args.interrupt,
+    true,
+  );
   // 运行时由 ensureAutoSelectGroup 决定：有节点则 Auto Select，否则 Direct
   let RULE_SET_DETOUR = AUTO_SELECT_TAG;
   // TUN 常量必须在 applySingBox114Dns 调用前初始化（避免 TDZ）
@@ -352,6 +360,8 @@ async function operator(input, targetPlatform, context) {
   RULE_SET_DETOUR = autoAfterStrip ? AUTO_SELECT_TAG : "Direct";
   syncAllRemoteDownloadDetours(RULE_SET_DETOUR);
   sanitizePolicyGroupMembers();
+  // 统一写入：切换节点/策略组是否打断既有连接
+  applyInterruptExistConnections(INTERRUPT_EXIST_CONNECTIONS);
 
   input.$content = JSON.stringify(config, null, 2);
   return input;
@@ -717,6 +727,7 @@ async function operator(input, targetPlatform, context) {
 
       group.type = "selector";
       group.outbounds = safeNodes;
+      group.interrupt_exist_connections = INTERRUPT_EXIST_CONNECTIONS;
       delete group.url;
       syncSelectorDefault(group);
       return group;
@@ -726,7 +737,7 @@ async function operator(input, targetPlatform, context) {
       type: "selector",
       tag: nextTag,
       outbounds: safeNodes,
-      interrupt_exist_connections: false,
+      interrupt_exist_connections: INTERRUPT_EXIST_CONNECTIONS,
     };
 
     syncSelectorDefault(group);
@@ -975,7 +986,7 @@ async function operator(input, targetPlatform, context) {
         url: TEST_URL,
         interval: "3m",
         tolerance: 150,
-        interrupt_exist_connections: false,
+        interrupt_exist_connections: INTERRUPT_EXIST_CONNECTIONS,
       };
       config.outbounds.push(group);
       existingTags.add(AUTO_SELECT_TAG);
@@ -986,7 +997,7 @@ async function operator(input, targetPlatform, context) {
       group.url = TEST_URL;
       if (!group.interval) group.interval = "3m";
       if (group.tolerance == null) group.tolerance = 150;
-      group.interrupt_exist_connections = false;
+      group.interrupt_exist_connections = INTERRUPT_EXIST_CONNECTIONS;
       delete group.default;
     }
 
@@ -1177,14 +1188,17 @@ async function operator(input, targetPlatform, context) {
 
   function ensureSelectorGroup(tag, members, options = {}) {
     let group = findOutboundByTag(tag);
+    const interrupt =
+      options.interrupt_exist_connections == null
+        ? INTERRUPT_EXIST_CONNECTIONS
+        : !!options.interrupt_exist_connections;
 
     if (!group) {
       group = {
         type: "selector",
         tag,
         outbounds: [],
-        interrupt_exist_connections:
-          options.interrupt_exist_connections !== false,
+        interrupt_exist_connections: interrupt,
       };
       config.outbounds.push(group);
       existingTags.add(tag);
@@ -1193,9 +1207,7 @@ async function operator(input, targetPlatform, context) {
       return null;
     } else {
       group.type = "selector";
-      if (options.interrupt_exist_connections !== false) {
-        group.interrupt_exist_connections = true;
-      }
+      group.interrupt_exist_connections = interrupt;
     }
 
     // 只写入当前已存在的 tag，杜绝 missing tags
@@ -1316,10 +1328,18 @@ async function operator(input, targetPlatform, context) {
     appTagMap[key] = tag;
 
     const group = ensureSelectorGroup(tag, members, {
-      interrupt_exist_connections: true,
+      interrupt_exist_connections: INTERRUPT_EXIST_CONNECTIONS,
     });
 
     return group;
+  }
+
+  function applyInterruptExistConnections(enabled) {
+    const value = !!enabled;
+    for (const outbound of config.outbounds || []) {
+      if (!outbound || !isPolicyGroup(outbound)) continue;
+      outbound.interrupt_exist_connections = value;
+    }
   }
 
   function ensureGfsAppGroups(regionTags, nodeTags) {
@@ -2647,6 +2667,19 @@ const COUNTRY_CODE_ALIASES = {
 
 // 仅这些国家单独建组；德/港及其余全部进 Other
 const FIXED_REGION_CODES = new Set(["JP", "SG", "TW", "US"]);
+
+function parseBoolish(value, defaultValue) {
+  if (value === undefined || value === null || value === "") {
+    return !!defaultValue;
+  }
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+
+  const s = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on", "y"].includes(s)) return true;
+  if (["0", "false", "no", "off", "n"].includes(s)) return false;
+  return !!defaultValue;
+}
 
 // ─── 地区组内节点排序（大小写不敏感） ─────────────────────────
 // 优先级：
