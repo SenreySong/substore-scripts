@@ -109,6 +109,9 @@ async function operator(input, targetPlatform, context) {
     }
   }
 
+  // 统一模板里 Direct/direct/DIRECT 等内置直连出站，避免策略组出现两个大小写不同的 direct
+  normalizeDirectOutbounds(config);
+
   // 尽早删掉空的 Auto Select，避免后续任何阶段带着 empty urltest
   // （样例里 Auto Select.outbounds=[] 会直接触发 missing tags）
   stripBrokenPolicyGroups(config);
@@ -122,16 +125,13 @@ async function operator(input, targetPlatform, context) {
     originalGroups.map((item) => item && item.tag).filter(Boolean),
   );
 
+  // 直连只保留 canonical 名 Direct；direct/DIRECT 在 shouldPreserve / canonicalize 里归一
   const preserveSet = new Set([
     "Direct",
-    "DIRECT",
-    "direct",
     "Proxy",
     "PROXY",
     "proxy",
     "Block",
-    "BLOCK",
-    "block",
     "Reject",
     "REJECT",
     "reject",
@@ -329,7 +329,7 @@ async function operator(input, targetPlatform, context) {
 
     for (const tag of group.outbounds || []) {
       if (shouldPreserveGroupMember(tag, generatedGroupTagSetAll)) {
-        preserved.push(tag);
+        preserved.push(canonicalizeMemberTag(tag));
       }
     }
 
@@ -359,6 +359,9 @@ async function operator(input, targetPlatform, context) {
   const autoAfterStrip = ensureAutoSelectGroup();
   RULE_SET_DETOUR = autoAfterStrip ? AUTO_SELECT_TAG : "Direct";
   syncAllRemoteDownloadDetours(RULE_SET_DETOUR);
+  sanitizePolicyGroupMembers();
+  // 收尾再统一一次 Direct/direct，避免中途又被塞进小写 direct
+  normalizeDirectOutbounds(config);
   sanitizePolicyGroupMembers();
   // 统一写入：切换节点/策略组是否打断既有连接
   applyInterruptExistConnections(INTERRUPT_EXIST_CONNECTIONS);
@@ -665,6 +668,9 @@ async function operator(input, targetPlatform, context) {
   function shouldPreserveGroupMember(tag, generatedSet) {
     if (!tag || typeof tag !== "string") return false;
 
+    // direct/DIRECT 一律按 Direct 处理
+    if (isDirectAliasTag(tag)) return preserveSet.has("Direct");
+
     if (preserveSet.has(tag)) return true;
 
     if (originalGroupTags.has(tag) && !generatedSet.has(tag)) {
@@ -900,7 +906,6 @@ async function operator(input, targetPlatform, context) {
 
   function ensureBuiltinOutbounds() {
     ensurePlainOutbound("Direct", "direct");
-    ensurePlainOutbound("direct", "direct");
     ensurePlainOutbound("Block", "block");
     ensurePlainOutbound("Bittorrent", "direct");
   }
@@ -1110,9 +1115,13 @@ async function operator(input, targetPlatform, context) {
       if (!isPolicyGroup(outbound)) continue;
 
       const next = [];
-      for (const tag of outbound.outbounds || []) {
-        if (typeof tag !== "string" || !tag) continue;
-        if (!available.has(tag)) continue;
+      for (const rawTag of outbound.outbounds || []) {
+        if (typeof rawTag !== "string" || !rawTag) continue;
+        const tag = canonicalizeMemberTag(rawTag);
+        // Direct 统一后，可用集合里可能只有 Direct
+        if (!available.has(tag) && !(isDirectAliasTag(rawTag) && available.has("Direct"))) {
+          continue;
+        }
         // 禁止自引用
         if (tag === outbound.tag) continue;
         // 业务策略组不挂 Auto Select / 全部节点（Auto 仅用于下载）
@@ -1131,8 +1140,6 @@ async function operator(input, targetPlatform, context) {
         }
         if (available.has("Direct") && outbound.tag !== "Direct") {
           next.push("Direct");
-        } else if (available.has("direct") && outbound.tag !== "direct") {
-          next.push("direct");
         } else {
           // 从其它真实节点里随便塞一个，避免空组
           for (const t of available) {
@@ -1216,17 +1223,125 @@ async function operator(input, targetPlatform, context) {
       ...(config.endpoints || []).map((item) => item && item.tag).filter(Boolean),
     ]);
     const safeMembers = uniqueList(
-      (members || []).filter(
-        (t) => t && t !== tag && available.has(t),
-      ),
+      (members || [])
+        .map((t) => canonicalizeMemberTag(t))
+        .filter((t) => t && t !== tag && available.has(t)),
     );
     if (!safeMembers.length) {
       if (available.has("Direct") && tag !== "Direct") safeMembers.push("Direct");
-      else if (available.has("direct") && tag !== "direct") safeMembers.push("direct");
     }
     group.outbounds = safeMembers;
     syncSelectorDefault(group);
     return group;
+  }
+
+  // 内置直连 tag 统一为 Direct（忽略大小写）
+  function isDirectAliasTag(tag) {
+    return typeof tag === "string" && /^direct$/i.test(tag.trim());
+  }
+
+  function canonicalizeMemberTag(tag) {
+    if (typeof tag !== "string") return tag;
+    if (isDirectAliasTag(tag)) return "Direct";
+    if (/^block$/i.test(tag.trim())) return "Block";
+    return tag;
+  }
+
+  // 只保留一个 type=direct 且 tag 为 Direct 的内置直连；
+  // 其余 direct/DIRECT 等别名 outbound 删除，所有引用改写为 Direct。
+  function normalizeDirectOutbounds(targetConfig) {
+    if (!targetConfig || !Array.isArray(targetConfig.outbounds)) return;
+
+    const DIRECT_TAG = "Direct";
+    let keep = null;
+    const toRemove = new Set();
+
+    for (const outbound of targetConfig.outbounds) {
+      if (!outbound || typeof outbound !== "object") continue;
+      // 只合并「内置直连」本体；Bittorrent 等其它 type=direct 不动
+      if (String(outbound.type || "") !== "direct") continue;
+      if (!isDirectAliasTag(outbound.tag)) continue;
+
+      if (!keep) {
+        keep = outbound;
+        keep.tag = DIRECT_TAG;
+        if (keep.type !== "direct") keep.type = "direct";
+      } else {
+        toRemove.add(outbound);
+      }
+    }
+
+    if (keep) {
+      targetConfig.outbounds = targetConfig.outbounds.filter(
+        (item) => !toRemove.has(item),
+      );
+    }
+
+    const rewriteTag = (value) =>
+      isDirectAliasTag(value) ? DIRECT_TAG : value;
+
+    for (const outbound of targetConfig.outbounds) {
+      if (!outbound || typeof outbound !== "object") continue;
+
+      if (Array.isArray(outbound.outbounds)) {
+        outbound.outbounds = uniqueList(
+          outbound.outbounds.map(rewriteTag).filter(Boolean),
+        );
+      }
+      if (typeof outbound.default === "string") {
+        outbound.default = rewriteTag(outbound.default);
+        if (
+          Array.isArray(outbound.outbounds) &&
+          outbound.default &&
+          !outbound.outbounds.includes(outbound.default)
+        ) {
+          syncSelectorDefault(outbound);
+        }
+      }
+    }
+
+    for (const rule of (targetConfig.route && targetConfig.route.rules) || []) {
+      if (rule && typeof rule.outbound === "string") {
+        rule.outbound = rewriteTag(rule.outbound);
+      }
+    }
+
+    for (const server of (targetConfig.dns && targetConfig.dns.servers) || []) {
+      if (server && typeof server.detour === "string") {
+        server.detour = rewriteTag(server.detour);
+      }
+    }
+
+    for (const item of (targetConfig.route && targetConfig.route.rule_set) ||
+      []) {
+      if (
+        item &&
+        item.http_client &&
+        typeof item.http_client.detour === "string"
+      ) {
+        item.http_client.detour = rewriteTag(item.http_client.detour);
+      }
+    }
+
+    for (const service of Array.isArray(targetConfig.services)
+      ? targetConfig.services
+      : []) {
+      if (
+        service &&
+        service.dashboard &&
+        typeof service.dashboard === "object" &&
+        service.dashboard.http_client &&
+        typeof service.dashboard.http_client.detour === "string"
+      ) {
+        service.dashboard.http_client.detour = rewriteTag(
+          service.dashboard.http_client.detour,
+        );
+      }
+    }
+
+    if (targetConfig.route && typeof targetConfig.route.final === "string") {
+      targetConfig.route.final = rewriteTag(targetConfig.route.final);
+    }
   }
 
   // 删除空策略组 / 悬空引用；非空 Auto Select 保留
@@ -1347,11 +1462,7 @@ async function operator(input, targetPlatform, context) {
     const regions = uniqueList(regionTags);
 
     // 主选择器：仅地区组 + Direct（不挂 Auto Select，避免业务分流测速风暴）
-    const mainProxyMembers = uniqueList([
-      ...regions,
-      "direct",
-      "Direct",
-    ]);
+    const mainProxyMembers = uniqueList([...regions, "Direct"]);
     const mainProxyGroup = ensureResolvedAppGroup(
       "mainProxy",
       MAIN_PROXY_TAG,
@@ -1419,7 +1530,7 @@ async function operator(input, targetPlatform, context) {
         key: "apple",
         preferred: "Apple",
         aliases: ["🍎Apple", "Apple"],
-        members: uniqueList([...regions, mainTag, "direct", "Direct"]),
+        members: uniqueList([...regions, mainTag, "Direct"]),
       },
       {
         key: "streaming",
