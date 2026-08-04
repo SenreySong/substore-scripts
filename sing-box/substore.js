@@ -32,7 +32,6 @@ async function operator(input, targetPlatform, context) {
   let RULE_SET_DETOUR = AUTO_SELECT_TAG;
   // TUN 常量必须在 applySingBox114Dns 调用前初始化（避免 TDZ）
   const TUN_IPV4_DEFAULT = "172.19.0.1/30";
-  const TUN_IPV6_DEFAULT = "fd00::1/126";
   const TUN_ROUTE_EXCLUDE_DEFAULT = [
     "10.0.0.0/8",
     "172.16.0.0/12",
@@ -2283,16 +2282,10 @@ async function operator(input, targetPlatform, context) {
         ? [String(inbound.address)]
         : [];
 
-    // 旧文档式 v6 前缀 → 更通用的 fd00::/126
-    addresses = addresses.map((item) => {
-      if (/^fdfe:dcba:9876::/i.test(item)) return TUN_IPV6_DEFAULT;
-      return item;
-    });
+    // 仅保留 IPv4 地址，删除 TUN 的 IPv6 地址
+    addresses = addresses.filter((item) => !item.includes(":"));
 
-    const hasV4 = addresses.some((a) => a.includes(".") && !a.includes(":"));
-    const hasV6 = addresses.some((a) => a.includes(":"));
-    if (!hasV4) addresses.unshift(TUN_IPV4_DEFAULT);
-    if (!hasV6) addresses.push(TUN_IPV6_DEFAULT);
+    if (!addresses.length) addresses.unshift(TUN_IPV4_DEFAULT);
 
     inbound.address = uniqueList(addresses);
 
@@ -2317,22 +2310,13 @@ async function operator(input, targetPlatform, context) {
       const ip = raw.split("/")[0];
       if (!ip) continue;
 
-      if (ip.includes(":")) {
-        // IPv6：末段 +1（::1 → ::2）
-        const parts = ip.split(":");
-        let i = parts.length - 1;
-        while (i >= 0 && parts[i] === "") i -= 1;
-        if (i < 0) continue;
-        const n = parseInt(parts[i] || "0", 16);
-        if (Number.isNaN(n)) continue;
-        parts[i] = (n + 1).toString(16);
-        result.push(parts.join(":"));
-      } else {
-        const parts = ip.split(".").map((x) => Number(x));
-        if (parts.length !== 4 || parts.some((x) => Number.isNaN(x))) continue;
-        parts[3] = (parts[3] + 1) & 0xff;
-        result.push(parts.join("."));
-      }
+      // TUN 仅保留 IPv4 地址
+      if (ip.includes(":")) continue;
+
+      const parts = ip.split(".").map((x) => Number(x));
+      if (parts.length !== 4 || parts.some((x) => Number.isNaN(x))) continue;
+      parts[3] = (parts[3] + 1) & 0xff;
+      result.push(parts.join("."));
     }
     return uniqueList(result);
   }
@@ -2530,7 +2514,9 @@ async function operator(input, targetPlatform, context) {
     // 1.14：DNS cache 按 transport 分键，independent_cache 已废弃
     delete targetConfig.dns.independent_cache;
 
-    targetConfig.dns.strategy = "prefer_ipv4";
+    if (targetConfig.dns.strategy !== "ipv4_only") {
+      targetConfig.dns.strategy = "ipv4_only";
+    }
 
     if (!targetConfig.route || typeof targetConfig.route !== "object") {
       targetConfig.route = {};
