@@ -1622,15 +1622,9 @@ async function operator(input, targetPlatform, context) {
 
   function getGfsRulesetDefs() {
     const geo = "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo";
+    // 模板已自带 AD/AI/Apple/Google/Microsoft/Telegram/Netflix/Bahamut 等 -Site 规则集，
+    // 脚本只注入模板没有的规则集（CN/广告等大类不再重复注入）
     return [
-      {
-        tag: "Category-Ads",
-        url: `${geo}/geosite/category-ads-all.srs`,
-      },
-      {
-        tag: "category-httpdns-cn-ads",
-        url: `${geo}/geosite/category-httpdns-cn@ads.srs`,
-      },
       {
         tag: "GeoIP-Private",
         url: `${geo}/geoip/private.srs`,
@@ -1640,39 +1634,17 @@ async function operator(input, targetPlatform, context) {
         url: `${geo}/geosite/private.srs`,
       },
       {
-        tag: "GeoIP-CN",
-        url: `${geo}/geoip/cn.srs`,
-      },
-      {
-        tag: "GeoSite-CN",
-        url: `${geo}/geosite/cn.srs`,
-      },
-      {
         tag: "GeoLocation-!CN",
         url: `${geo}/geosite/geolocation-!cn.srs`,
       },
       { tag: "openai", url: `${geo}/geosite/openai.srs` },
-      { tag: "jetbrains-ai", url: `${geo}/geosite/jetbrains-ai.srs` },
-      {
-        tag: "bytedance-ai-!cn",
-        url: `${geo}/geosite/bytedance-ai-!cn.srs`,
-      },
-      { tag: "anthropic", url: `${geo}/geosite/anthropic.srs` },
-      { tag: "apple", url: `${geo}/geosite/apple.srs` },
       { tag: "disney", url: `${geo}/geosite/disney.srs` },
-      { tag: "bahamut", url: `${geo}/geosite/bahamut.srs` },
       { tag: "youtube", url: `${geo}/geosite/youtube.srs` },
       { tag: "spotify", url: `${geo}/geosite/spotify.srs` },
       { tag: "amazon", url: `${geo}/geosite/amazon.srs` },
       { tag: "oracle", url: `${geo}/geosite/oracle.srs` },
-      { tag: "microsoft", url: `${geo}/geosite/microsoft.srs` },
       { tag: "github", url: `${geo}/geosite/github.srs` },
       { tag: "tiktok", url: `${geo}/geosite/tiktok.srs` },
-      { tag: "telegram", url: `${geo}/geosite/telegram.srs` },
-      { tag: "telegram-ip", url: `${geo}/geoip/telegram.srs` },
-      { tag: "google", url: `${geo}/geosite/google.srs` },
-      { tag: "google-ip", url: `${geo}/geoip/google.srs` },
-      { tag: "google-gemini", url: `${geo}/geosite/google-gemini.srs` },
       { tag: "twitter", url: `${geo}/geosite/twitter.srs` },
       { tag: "twitter-ip", url: `${geo}/geoip/twitter.srs` },
       {
@@ -1739,16 +1711,11 @@ async function operator(input, targetPlatform, context) {
   function getManagedGfsRules() {
     const t = {
       openai: appTagMap.openai || "OpenAI",
-      ai: appTagMap.ai || "AI",
       tiktok: appTagMap.tiktok || "Tiktok",
       twitter: appTagMap.twitter || "Twitter",
-      telegram: appTagMap.telegram || "Telegram",
-      google: appTagMap.google || "Google",
       amazonOracle: appTagMap.amazonOracle || "Amazon|Oracle",
-      apple: appTagMap.apple || "Apple",
       streaming: appTagMap.streaming || "国外流媒体",
       spotify: appTagMap.spotify || "Spotify",
-      microsoft: appTagMap.microsoft || "Microsoft",
       github: appTagMap.github || "GitHub",
       main: appTagMap.mainProxy || MAIN_PROXY_TAG,
     };
@@ -1794,25 +1761,6 @@ async function operator(input, targetPlatform, context) {
         },
       },
       {
-        id: "gfs-ads",
-        test: (rule) =>
-          hasAnyRuleSet(rule, [
-            "Category-Ads",
-            "category-httpdns-cn-ads",
-            "category-httpdns-cn@ads-geosite.json",
-          ]) &&
-          (rule.outbound === "Block" ||
-            rule.action === "reject" ||
-            rule.outbound === "block"),
-        // 用 reject/drop，避免 UDP packet 走 outbound/block 时刷
-        // "listen packet connection ... operation not permitted"
-        rule: {
-          action: "reject",
-          rule_set: ["Category-Ads", "category-httpdns-cn-ads"],
-          method: "drop",
-        },
-      },
-      {
         id: "gfs-quic",
         test: (rule) =>
           rule &&
@@ -1835,36 +1783,6 @@ async function operator(input, targetPlatform, context) {
           action: "route",
           rule_set: ["openai"],
           outbound: t.openai,
-        },
-      },
-      {
-        id: "gfs-ai",
-        test: (rule) =>
-          hasAnyRuleSet(rule, [
-            "jetbrains-ai",
-            "bytedance-ai-!cn",
-            "anthropic",
-            "jetbrains-ai-geosite.json",
-            "bytedance-ai-!cn-geosite.json",
-            "anthropic-geosite.json",
-            "AI-Site",
-          ]),
-        rule: {
-          action: "route",
-          rule_set: ["jetbrains-ai", "bytedance-ai-!cn", "anthropic"],
-          outbound: t.ai,
-        },
-      },
-      {
-        id: "gfs-apple",
-        test: (rule) =>
-          (hasAnyRuleSet(rule, ["apple", "apple-geosite.json", "Apple-Site"]) &&
-            !hasAnyRuleSet(rule, ["apple-cn", "apple-cn-geosite.json"])) ||
-          rule.outbound === t.apple,
-        rule: {
-          action: "route",
-          rule_set: ["apple"],
-          outbound: t.apple,
         },
       },
       // YouTube 比 Google 更具体，必须单独且排在 Google 前，避免被 google geosite 吃掉
@@ -1896,15 +1814,10 @@ async function operator(input, targetPlatform, context) {
       {
         id: "gfs-streaming",
         test: (rule) =>
-          hasAnyRuleSet(rule, [
-            "disney",
-            "bahamut",
-            "disney-geosite.json",
-            "bahamut-geosite.json",
-          ]),
+          hasAnyRuleSet(rule, ["disney", "disney-geosite.json"]),
         rule: {
           action: "route",
-          rule_set: ["disney", "bahamut"],
+          rule_set: ["disney"],
           outbound: t.streaming,
         },
       },
@@ -1921,25 +1834,6 @@ async function operator(input, targetPlatform, context) {
           action: "route",
           rule_set: ["amazon", "oracle"],
           outbound: t.amazonOracle,
-        },
-      },
-      {
-        id: "gfs-microsoft",
-        test: (rule) =>
-          (hasAnyRuleSet(rule, [
-            "microsoft",
-            "microsoft-geosite.json",
-            "Microsoft-Site",
-          ]) &&
-            !hasAnyRuleSet(rule, [
-              "microsoft@cn",
-              "microsoft@cn-geosite.json",
-            ])) ||
-          rule.outbound === t.microsoft,
-        rule: {
-          action: "route",
-          rule_set: ["microsoft"],
-          outbound: t.microsoft,
         },
       },
       {
@@ -1963,44 +1857,6 @@ async function operator(input, targetPlatform, context) {
         },
       },
       {
-        id: "gfs-telegram",
-        test: (rule) =>
-          hasAnyRuleSet(rule, [
-            "telegram",
-            "telegram-ip",
-            "telegram-geosite.json",
-            "telegram-geoip.json",
-            "Telegram-Site",
-            "Telegram-IP",
-          ]) || rule.outbound === t.telegram,
-        rule: {
-          action: "route",
-          rule_set: ["telegram", "telegram-ip"],
-          outbound: t.telegram,
-        },
-      },
-      // Google 规则集较宽，必须排在 YouTube / 国外流媒体之后
-      {
-        id: "gfs-google",
-        test: (rule) =>
-          (hasAnyRuleSet(rule, [
-            "google",
-            "google-ip",
-            "google-gemini",
-            "google-geosite.json",
-            "google-geoip.json",
-            "google-gemini-geosite.json",
-            "Google-Site",
-          ]) ||
-            rule.outbound === t.google) &&
-          !hasAnyRuleSet(rule, ["youtube", "youtube-geosite.srs", "youtube-geosite.json"]),
-        rule: {
-          action: "route",
-          rule_set: ["google", "google-ip", "google-gemini"],
-          outbound: t.google,
-        },
-      },
-      {
         id: "gfs-private-ip",
         test: (rule) => hasAnyRuleSet(rule, ["GeoIP-Private"]),
         rule: {
@@ -2015,38 +1871,6 @@ async function operator(input, targetPlatform, context) {
         rule: {
           action: "route",
           rule_set: ["GeoSite-Private"],
-          outbound: "Direct",
-        },
-      },
-      {
-        id: "gfs-cn-site",
-        test: (rule) =>
-          hasAnyRuleSet(rule, [
-            "GeoSite-CN",
-            "cn-geosite.json",
-            "apple-cn-geosite.json",
-            "category-httpdns-cn-geosite.json",
-            "microsoft@cn-geosite.json",
-            "tencent-geosite.json",
-            "aliyun-geosite.json",
-            "bytedance-geosite.json",
-          ]) &&
-          rule.outbound !== t.main &&
-          rule.outbound !== MAIN_PROXY_TAG &&
-          rule.outbound !== "Proxy",
-        rule: {
-          action: "route",
-          rule_set: ["GeoSite-CN"],
-          outbound: "Direct",
-        },
-      },
-      {
-        id: "gfs-cn-ip",
-        test: (rule) =>
-          hasAnyRuleSet(rule, ["GeoIP-CN", "cn-geoip.json"]),
-        rule: {
-          action: "route",
-          rule_set: ["GeoIP-CN"],
           outbound: "Direct",
         },
       },
@@ -2158,29 +1982,24 @@ async function operator(input, targetPlatform, context) {
 
     // 顺序：sniff/dns → 拒绝 → 分流（精确→应用）→ private → CN → !CN
     // 不注入 clash_mode，纯 sing-box TUN 规则模式
+    // 模板已自带 AD/AI/Apple/Google/Microsoft/Telegram/CN 等规则，脚本只补充独有规则
     const managedTiers = {
-      // 拒绝类靠前（广告 / quic）
-      reject: ["gfs-ads", "gfs-quic"],
-      // 应用分流：YouTube → Spotify → 流媒体 → … → Google（最宽）
+      // 拒绝类靠前（quic）
+      reject: ["gfs-quic"],
+      // 应用分流：YouTube → Spotify → 流媒体 → …（模板无这些规则）
       specific: [
         "gfs-twitter",
         "gfs-openai",
-        "gfs-ai",
-        "gfs-apple",
         "gfs-youtube",
         "gfs-spotify",
         "gfs-streaming",
         "gfs-amazon-oracle",
-        "gfs-microsoft",
         "gfs-github",
         "gfs-tiktok",
-        "gfs-telegram",
-        "gfs-google",
       ],
       // BT 是分流到专用出站，不是拒绝
       divert: ["gfs-bt"],
       private: ["gfs-private-ip", "gfs-private-site"],
-      cn: ["gfs-cn-site", "gfs-cn-ip"],
       notcn: ["gfs-not-cn"],
     };
 
@@ -2233,18 +2052,18 @@ async function operator(input, targetPlatform, context) {
     config.route.rules = [
       // 1. sniff / DNS 最前
       ...infra,
-      // 2. 拒绝类（模板 + 广告/quic）
+      // 2. 拒绝类（模板 + quic）
       ...rejectKept,
       ...managedRulesOf(managedTiers.reject),
-      // 3. 分流规则（精确域名/进程/应用 → BT）
-      ...precise,
+      // 3. 脚本精确规则优先于模板宽泛规则（如 YouTube 须在 Google 之前）
       ...managedRulesOf(managedTiers.specific),
+      // 4. 模板精确规则（域名/进程/应用）
+      ...precise,
       ...managedRulesOf(managedTiers.divert),
-      // 4. Private / CN / !CN 大盘靠后
+      // 5. Private / CN / !CN 大盘靠后（CN 规则集由模板自带，不再重复注入）
       ...privateKept,
       ...managedRulesOf(managedTiers.private),
       ...cnKept,
-      ...managedRulesOf(managedTiers.cn),
       ...notCnKept,
       ...managedRulesOf(managedTiers.notcn),
     ];
@@ -2339,20 +2158,10 @@ async function operator(input, targetPlatform, context) {
     }
 
     const rules = targetConfig.route.rules;
-    const hasProtocolDnsHijack = rules.some(
-      (rule) =>
-        rule &&
-        rule.action === "hijack-dns" &&
-        (rule.protocol === "dns" ||
-          (Array.isArray(rule.protocol) && rule.protocol.includes("dns"))),
+    const hasProtocolDnsHijack = rules.some((rule) =>
+      hijackCoversProtocolDns(rule),
     );
-    const hasPort53Hijack = rules.some(
-      (rule) =>
-        rule &&
-        rule.action === "hijack-dns" &&
-        (rule.port === 53 ||
-          (Array.isArray(rule.port) && rule.port.includes(53))),
-    );
+    const hasPort53Hijack = rules.some((rule) => hijackCoversPort53(rule));
 
     // 插在规则列表靠前位置（在已有 sniff 之后尽量靠前）
     let insertAt = 0;
@@ -2370,6 +2179,41 @@ async function operator(input, targetPlatform, context) {
 
     if (toInsert.length) {
       rules.splice(insertAt, 0, ...toInsert);
+    }
+
+    // 递归检查 hijack-dns 规则（含 logical 嵌套子规则），避免重复注入
+    function hijackCoversPort53(rule) {
+      if (!rule || typeof rule !== "object" || rule.action !== "hijack-dns") {
+        return false;
+      }
+      if (rule.port === 53) return true;
+      if (Array.isArray(rule.port) && rule.port.includes(53)) return true;
+      if (
+        Array.isArray(rule.inbound) &&
+        rule.inbound.some((name) => /dns/i.test(String(name)))
+      ) {
+        return true;
+      }
+      if (Array.isArray(rule.rules)) {
+        return rule.rules.some((sub) => hijackCoversPort53(sub));
+      }
+      return false;
+    }
+
+    function hijackCoversProtocolDns(rule) {
+      if (!rule || typeof rule !== "object" || rule.action !== "hijack-dns") {
+        return false;
+      }
+      if (
+        rule.protocol === "dns" ||
+        (Array.isArray(rule.protocol) && rule.protocol.includes("dns"))
+      ) {
+        return true;
+      }
+      if (Array.isArray(rule.rules)) {
+        return rule.rules.some((sub) => hijackCoversProtocolDns(sub));
+      }
+      return false;
     }
   }
 
