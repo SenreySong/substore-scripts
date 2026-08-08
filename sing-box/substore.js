@@ -30,16 +30,6 @@ async function operator(input, targetPlatform, context) {
   );
   // 运行时由 ensureAutoSelectGroup 决定：有节点则 Auto Select，否则 Direct
   let RULE_SET_DETOUR = AUTO_SELECT_TAG;
-  // TUN 常量必须在 applySingBox114Dns 调用前初始化（避免 TDZ）
-  const TUN_IPV4_DEFAULT = "172.19.0.1/30";
-  const TUN_ROUTE_EXCLUDE_DEFAULT = [
-    "10.0.0.0/8",
-    "172.16.0.0/12",
-    "192.168.0.0/16",
-    "169.254.0.0/16",
-    "fc00::/7",
-    "fe80::/10",
-  ];
 
   // 逻辑名 → 实际 outbound tag（优先复用模板已有组）
   const appTagMap = {
@@ -2088,67 +2078,7 @@ async function operator(input, targetPlatform, context) {
     inbound.listen = "0.0.0.0";
   }
 
-  function applyTunAddressAndBypass(inbound) {
-    let addresses = Array.isArray(inbound.address)
-      ? inbound.address.map(String)
-      : inbound.address
-        ? [String(inbound.address)]
-        : [];
-
-    // 仅保留 IPv4 地址，删除 TUN 的 IPv6 地址
-    addresses = addresses.filter((item) => !item.includes(":"));
-
-    if (!addresses.length) addresses.unshift(TUN_IPV4_DEFAULT);
-
-    inbound.address = uniqueList(addresses);
-
-    // 合并局域网绕过，不覆盖模板已有项；不排除 FakeIP 198.18.0.0/15
-    const existingExclude = Array.isArray(inbound.route_exclude_address)
-      ? inbound.route_exclude_address.map(String)
-      : inbound.route_exclude_address
-        ? [String(inbound.route_exclude_address)]
-        : [];
-    inbound.route_exclude_address = uniqueList([
-      ...existingExclude,
-      ...TUN_ROUTE_EXCLUDE_DEFAULT,
-    ]);
-  }
-
-  // 从 TUN address 推导 dns_address（取接口地址 +1，与官方文档示例一致）
-  function deriveTunDnsAddresses(addresses) {
-    const result = [];
-    for (const item of addresses || []) {
-      const raw = String(item || "").trim();
-      if (!raw) continue;
-      const ip = raw.split("/")[0];
-      if (!ip) continue;
-
-      // TUN 仅保留 IPv4 地址
-      if (ip.includes(":")) continue;
-
-      const parts = ip.split(".").map((x) => Number(x));
-      if (parts.length !== 4 || parts.some((x) => Number.isNaN(x))) continue;
-      parts[3] = (parts[3] + 1) & 0xff;
-      result.push(parts.join("."));
-    }
-    return uniqueList(result);
-  }
-
-  // 1.14.0-alpha.21：dns_mode=hijack + dns_address
-  function applyTunDnsHijack(inbound) {
-    inbound.dns_mode = "hijack";
-
-    const derived = deriveTunDnsAddresses(inbound.address);
-    if (derived.length > 0) {
-      // 显式写入时不会自动 hijack-dns，需配合路由 hijack-dns 规则
-      inbound.dns_address = derived;
-    } else {
-      // 未推导成功则交给内核默认（按 address 下一跳自动生成并劫持）
-      delete inbound.dns_address;
-    }
-  }
-
-  // 确保路由侧有 DNS 劫持（显式 dns_address 时必须；无则作双保险）
+  // 确保路由侧有 DNS 劫持（模板未写时作双保险；不改写 TUN 入站）
   function ensureRouteDnsHijackRules(targetConfig) {
     if (!targetConfig.route || typeof targetConfig.route !== "object") {
       targetConfig.route = {};
@@ -2328,33 +2258,10 @@ async function operator(input, targetPlatform, context) {
     googleResolver.detour = "🔍Google";
     delete googleResolver.domain_resolver;
 
-    const fakeIpResolver = requireDnsServer("DNS-FAKEIP", "fakeip");
-    fakeIpResolver.inet4_range = "198.18.0.0/15";
-    fakeIpResolver.inet6_range = "fc00::/18";
-
-    let fakeIpRule = targetConfig.dns.rules.find(
-      (rule) => rule && rule.server === "DNS-FAKEIP",
-    );
-
-    if (!fakeIpRule) {
-      fakeIpRule = {
-        action: "route",
-        server: "DNS-FAKEIP",
-      };
-      targetConfig.dns.rules.push(fakeIpRule);
-    }
-
-    fakeIpRule.query_type = ["A", "AAAA"];
-    fakeIpRule.action = "route";
-    // 与 cache_file.store_fakeip / store_dns 配合，允许缓存
-    delete fakeIpRule.disable_cache;
+    // Fake-IP（DNS-FAKEIP 段、规则、dns.strategy）完全由配置模板决定，脚本不改写
 
     // 1.14：DNS cache 按 transport 分键，independent_cache 已废弃
     delete targetConfig.dns.independent_cache;
-
-    if (targetConfig.dns.strategy !== "ipv4_only") {
-      targetConfig.dns.strategy = "ipv4_only";
-    }
 
     if (!targetConfig.route || typeof targetConfig.route !== "object") {
       targetConfig.route = {};
@@ -2370,18 +2277,10 @@ async function operator(input, targetPlatform, context) {
       if (!inbound || typeof inbound !== "object") continue;
 
       // mixed 入站：监听全部地址，供局域网设备使用
+      // TUN 入站完全按模板，脚本不改写
       if (inbound.type === "mixed") {
         applyMixedInboundListenAll(inbound);
-        continue;
       }
-
-      if (inbound.type !== "tun") continue;
-
-      applyTunAddressAndBypass(inbound);
-
-      // sing-box 1.14.0-alpha.21+：TUN DNS 模式与接口 DNS 劫持
-      // https://sing-box.sagernet.org/configuration/inbound/tun/#dns_mode
-      applyTunDnsHijack(inbound);
     }
 
     ensureRouteDnsHijackRules(targetConfig);

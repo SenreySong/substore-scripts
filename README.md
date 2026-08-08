@@ -76,9 +76,10 @@ https://raw.githubusercontent.com/SenreySong/substore-scripts/main/sing-box/subs
 - 广告 / QUIC 拦截使用 `action: reject` + `method: drop`。
 - 美国子组展示名：优化 / **落地** / 家宽（兼容旧名「直连」）。
 - 按 1.14 开启 `experimental.cache_file`（`store_fakeip` + `store_dns`）。
+- **Fake-IP**（`DNS-FAKEIP` 的 `inet4_range` / `inet6_range`、相关 DNS 规则、`dns.strategy`）**完全按配置模板**，脚本不改写；样本见 `examples/config.sample.json`。
 - 关闭 Clash API；开启官方 `services` API + dashboard（`127.0.0.1:9090`）。
-- TUN 显式 `dns_mode: hijack` + `dns_address`（1.14.0-alpha.21 接口 DNS 劫持），并确保路由 `hijack-dns`。
-- TUN IPv6 使用通用 ULA `fd00::1/126`；`route_exclude_address` 绕过常见局域网/链路本地段。
+- **TUN 入站**（`address` / `route_exclude_address` / `dns_mode` / `dns_address` 等）**完全按模板**，脚本不改写。
+- 路由侧在缺少时补 `hijack-dns`（`protocol: dns` / `port: 53`），不改动 TUN 对象。
 - **mixed 入站** `listen` 强制为 `0.0.0.0`（全接口，不仅本机）。
 
 ## 本地开发
