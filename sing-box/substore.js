@@ -44,6 +44,8 @@ async function operator(input, targetPlatform, context) {
     amazonOracle: "Amazon|Oracle",
     apple: "Apple",
     streaming: "国外流媒体",
+    youtube: "",
+    disney: "",
     spotify: "Spotify",
     microsoft: "Microsoft",
     github: "GitHub",
@@ -295,6 +297,8 @@ async function operator(input, targetPlatform, context) {
     appTagMap.amazonOracle,
     appTagMap.apple,
     appTagMap.streaming,
+    appTagMap.youtube,
+    appTagMap.disney,
     appTagMap.spotify,
     appTagMap.microsoft,
     appTagMap.github,
@@ -309,6 +313,7 @@ async function operator(input, targetPlatform, context) {
 
   for (const group of originalGroups) {
     if (!group) continue;
+    if (!findOutboundByTag(group.tag)) continue;
     if (generatedGroupTagSetAll.has(group.tag)) continue;
     if (legacySyncedTags.has(group.tag)) continue;
     if (isUSParentTag(group.tag)) continue;
@@ -1413,18 +1418,12 @@ async function operator(input, targetPlatform, context) {
     }
   }
 
-  // 优先复用模板已有策略组，没有再按 preferred 新建
+  // 优先复用模板已有策略组：先精确 tag，再去 emoji / 忽略大小写
   function resolveAppGroupTag(preferred, aliases = []) {
-    const candidates = uniqueList([...(aliases || []), preferred]);
-
-    for (const tag of candidates) {
-      const group = findOutboundByTag(tag);
-      if (group && isPolicyGroup(group)) {
-        return group.tag;
-      }
-    }
-
-    return preferred;
+    const existing = config.outbounds
+      .filter((item) => item && isPolicyGroup(item) && item.tag)
+      .map((item) => item.tag);
+    return matchPolicyGroupTag(existing, preferred, aliases);
   }
 
   function ensureResolvedAppGroup(key, preferred, aliases, members) {
@@ -1522,12 +1521,6 @@ async function operator(input, targetPlatform, context) {
         members: uniqueList([...regions, mainTag, "Direct"]),
       },
       {
-        key: "streaming",
-        preferred: "国外流媒体",
-        aliases: ["国外流媒体", "Streaming", "📺Streaming"],
-        members: regionPlusMain,
-      },
-      {
         key: "spotify",
         preferred: "Spotify",
         aliases: ["Spotify", "🎵Spotify", "spotify"],
@@ -1557,10 +1550,45 @@ async function operator(input, targetPlatform, context) {
       if (group) tags.add(group.tag);
     }
 
+    applyStreamingGroupPlan(regionPlusMain, tags);
+
     // 模板里有、但不在上述 GFS 映射中的应用组：只同步地区成员，不改名
     syncExtraTemplateGroups(regions, nodeTags, tags);
 
     return tags;
+  }
+
+  // 国外流媒体目前只承接 YouTube + Disney。
+  // 模板已有对应组（YouTube / Google、Disney）时不再新建，并删掉多余的流媒体组。
+  function applyStreamingGroupPlan(regionPlusMain, tags) {
+    const existingGroupTags = config.outbounds
+      .filter((item) => item && isPolicyGroup(item) && item.tag)
+      .map((item) => item.tag);
+    const plan = resolveStreamingTargets(existingGroupTags, appTagMap.google);
+
+    if (plan.needsStreamingGroup) {
+      const group = ensureResolvedAppGroup(
+        "streaming",
+        "国外流媒体",
+        ["国外流媒体", "Streaming", "📺Streaming"],
+        regionPlusMain,
+      );
+      const streamingTag = group ? group.tag : plan.streamingTag;
+      appTagMap.streaming = streamingTag;
+      appTagMap.youtube =
+        plan.youtube === plan.streamingTag ? streamingTag : plan.youtube;
+      appTagMap.disney =
+        plan.disney === plan.streamingTag ? streamingTag : plan.disney;
+      if (group) tags.add(group.tag);
+      return;
+    }
+
+    appTagMap.streaming = "";
+    appTagMap.youtube = plan.youtube;
+    appTagMap.disney = plan.disney;
+    if (plan.existingStreamingTag) {
+      removeOutboundCompletely(plan.existingStreamingTag);
+    }
   }
 
   function syncExtraTemplateGroups(regions, nodeTags, alreadyManaged) {
@@ -1571,9 +1599,13 @@ async function operator(input, targetPlatform, context) {
       "🎙️Discord",
       "🎨Pixiv",
     ];
+    const existingGroupTags = config.outbounds
+      .filter((item) => item && isPolicyGroup(item) && item.tag)
+      .map((item) => item.tag);
 
-    for (const tag of extras) {
-      if (alreadyManaged.has(tag)) continue;
+    for (const extra of extras) {
+      const tag = findPolicyTagByNames(existingGroupTags, [extra]);
+      if (!tag || alreadyManaged.has(tag)) continue;
 
       const group = findOutboundByTag(tag);
       if (!group || !isPolicyGroup(group)) continue;
@@ -1704,7 +1736,8 @@ async function operator(input, targetPlatform, context) {
       tiktok: appTagMap.tiktok || "Tiktok",
       twitter: appTagMap.twitter || "Twitter",
       amazonOracle: appTagMap.amazonOracle || "Amazon|Oracle",
-      streaming: appTagMap.streaming || "国外流媒体",
+      youtube: appTagMap.youtube || appTagMap.google || MAIN_PROXY_TAG,
+      disney: appTagMap.disney || appTagMap.streaming || MAIN_PROXY_TAG,
       spotify: appTagMap.spotify || "Spotify",
       github: appTagMap.github || "GitHub",
       main: appTagMap.mainProxy || MAIN_PROXY_TAG,
@@ -1783,7 +1816,7 @@ async function operator(input, targetPlatform, context) {
         rule: {
           action: "route",
           rule_set: ["youtube"],
-          outbound: t.streaming,
+          outbound: t.youtube,
         },
       },
       {
@@ -1808,7 +1841,7 @@ async function operator(input, targetPlatform, context) {
         rule: {
           action: "route",
           rule_set: ["disney"],
-          outbound: t.streaming,
+          outbound: t.disney,
         },
       },
       {
@@ -1976,7 +2009,7 @@ async function operator(input, targetPlatform, context) {
     const managedTiers = {
       // 拒绝类靠前（quic）
       reject: ["gfs-quic"],
-      // 应用分流：YouTube → Spotify → 流媒体 → …（模板无这些规则）
+      // 应用分流：YouTube → Spotify → Disney → …（模板无这些规则）
       specific: [
         "gfs-twitter",
         "gfs-openai",
@@ -2529,6 +2562,75 @@ function parseBoolish(value, defaultValue) {
   return !!defaultValue;
 }
 
+// 策略组名归一：去掉国旗 / emoji / 装饰字母，只留字母数字与中文，再转小写
+function normalizePolicyTag(tag) {
+  return String(tag || "")
+    .replace(/[\u{1F1E6}-\u{1F1FF}]{2}/gu, "")
+    .replace(/\p{Extended_Pictographic}/gu, "")
+    .replace(/[\uFE0F\u200D\u20E3]/g, "")
+    .replace(/[\u{1D400}-\u{1D7FF}]/gu, "")
+    .replace(/[^\p{L}\p{N}]+/gu, "")
+    .toLowerCase();
+}
+
+function findPolicyTagByNames(existingTags, names) {
+  const list = Array.isArray(existingTags) ? existingTags.filter(Boolean) : [];
+  const rawNames = (names || []).filter(Boolean);
+
+  for (const name of rawNames) {
+    if (list.includes(name)) return name;
+  }
+
+  const wanted = new Set(rawNames.map(normalizePolicyTag).filter(Boolean));
+  if (!wanted.size) return "";
+
+  for (const tag of list) {
+    if (wanted.has(normalizePolicyTag(tag))) return tag;
+  }
+
+  return "";
+}
+
+function matchPolicyGroupTag(existingTags, preferred, aliases) {
+  const found = findPolicyTagByNames(existingTags, [
+    preferred,
+    ...(Array.isArray(aliases) ? aliases : []),
+  ]);
+  return found || preferred;
+}
+
+// YouTube / Disney 能落到模板已有组时，不再保留「国外流媒体」
+function resolveStreamingTargets(existingTags, googleTag) {
+  const tags = Array.isArray(existingTags) ? existingTags.filter(Boolean) : [];
+  const youtubeDedicated = findPolicyTagByNames(tags, [
+    "youtube",
+    "ytb",
+    "YouTube",
+    "Youtube",
+  ]);
+  const disneyDedicated = findPolicyTagByNames(tags, ["disney", "Disney"]);
+  const existingStreamingTag = findPolicyTagByNames(tags, [
+    "国外流媒体",
+    "Streaming",
+    "📺Streaming",
+  ]);
+
+  const youtubeNeedsStreaming = !youtubeDedicated && !googleTag;
+  const disneyNeedsStreaming = !disneyDedicated;
+  const needsStreamingGroup = youtubeNeedsStreaming || disneyNeedsStreaming;
+  const streamingTag = needsStreamingGroup
+    ? existingStreamingTag || "国外流媒体"
+    : "";
+
+  return {
+    youtube: youtubeDedicated || googleTag || streamingTag,
+    disney: disneyDedicated || streamingTag,
+    needsStreamingGroup,
+    streamingTag,
+    existingStreamingTag,
+  };
+}
+
 // ─── 地区组内节点排序（大小写不敏感） ─────────────────────────
 // 优先级：
 // 1) 含「赠」的最后
@@ -2735,3 +2837,12 @@ const KNOWN_REGION_CODES = new Set([
   "VN",
   "ZA",
 ]);
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    normalizePolicyTag,
+    findPolicyTagByNames,
+    matchPolicyGroupTag,
+    resolveStreamingTargets,
+  };
+}
