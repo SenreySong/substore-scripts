@@ -48,7 +48,6 @@ async function operator(input, targetPlatform, context) {
     disney: "",
     spotify: "Spotify",
     microsoft: "Microsoft",
-    github: "GitHub",
   };
 
   if (!collectionName) {
@@ -301,7 +300,12 @@ async function operator(input, targetPlatform, context) {
     appTagMap.disney,
     appTagMap.spotify,
     appTagMap.microsoft,
-    appTagMap.github,
+    // GitHub 不再由脚本接管；模板已有组保持原有成员与规则关系。
+    ...originalGroups
+      .filter(
+        (item) => item && normalizePolicyTag(item.tag) === "github",
+      )
+      .map((item) => item.tag),
     "🇨🇳China Services",
     "🌸Bahamut",
     "📺Bilibili",
@@ -1532,12 +1536,6 @@ async function operator(input, targetPlatform, context) {
         aliases: ["💻Microsoft", "Microsoft"],
         members: regionPlusMain,
       },
-      {
-        key: "github",
-        preferred: "GitHub",
-        aliases: ["GitHub", "Github", "🐙GitHub"],
-        members: regionPlusMain,
-      },
     ];
 
     for (const def of appDefs) {
@@ -1665,7 +1663,6 @@ async function operator(input, targetPlatform, context) {
       { tag: "spotify", url: `${geo}/geosite/spotify.srs` },
       { tag: "amazon", url: `${geo}/geosite/amazon.srs` },
       { tag: "oracle", url: `${geo}/geosite/oracle.srs` },
-      { tag: "github", url: `${geo}/geosite/github.srs` },
       { tag: "tiktok", url: `${geo}/geosite/tiktok.srs` },
       { tag: "twitter", url: `${geo}/geosite/twitter.srs` },
       { tag: "twitter-ip", url: `${geo}/geoip/twitter.srs` },
@@ -1739,7 +1736,6 @@ async function operator(input, targetPlatform, context) {
       youtube: appTagMap.youtube || appTagMap.google || MAIN_PROXY_TAG,
       disney: appTagMap.disney || appTagMap.streaming || MAIN_PROXY_TAG,
       spotify: appTagMap.spotify || "Spotify",
-      github: appTagMap.github || "GitHub",
       main: appTagMap.mainProxy || MAIN_PROXY_TAG,
     };
 
@@ -1857,16 +1853,6 @@ async function operator(input, targetPlatform, context) {
           action: "route",
           rule_set: ["amazon", "oracle"],
           outbound: t.amazonOracle,
-        },
-      },
-      {
-        id: "gfs-github",
-        test: (rule) =>
-          hasAnyRuleSet(rule, ["github", "github-geosite.json"]),
-        rule: {
-          action: "route",
-          rule_set: ["github"],
-          outbound: t.github,
         },
       },
       {
@@ -2017,7 +2003,6 @@ async function operator(input, targetPlatform, context) {
         "gfs-spotify",
         "gfs-streaming",
         "gfs-amazon-oracle",
-        "gfs-github",
         "gfs-tiktok",
       ],
       // BT 是分流到专用出站，不是拒绝
