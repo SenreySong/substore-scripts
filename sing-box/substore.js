@@ -367,7 +367,7 @@ async function operator(input, targetPlatform, context) {
   input.$content = JSON.stringify(config, null, 2);
   return input;
 
-  // ─── 固定地区组：日/新/台/美×3，德港及其余进 Other（不再做赠送组） ───
+  // ─── 固定分组：赠送优先，其余按日/新/台/欧洲/美×3/Other 归组 ───
 
   function getUSSubgroupDefs() {
     return {
@@ -417,6 +417,35 @@ async function operator(input, targetPlatform, context) {
       groupName: "🌐 Other",
       aliases: ["🌐 Other", "🌐Other", "Other", "其它", "其他", "OTHER"],
       isOther: true,
+    };
+  }
+
+  function getGiftGroupDef() {
+    return {
+      key: "gift",
+      groupName: "🎁 赠送策略组",
+      aliases: [
+        "🎁 赠送策略组",
+        "🎁赠送策略组",
+        "赠送策略组",
+        "赠送",
+        "🇭🇰 赠送策略组",
+      ],
+    };
+  }
+
+  function getEuropeGroupDef() {
+    return {
+      key: "europe",
+      groupName: "🇪🇺 欧洲策略组",
+      aliases: [
+        "🇪🇺 欧洲策略组",
+        "🇪🇺欧洲策略组",
+        "欧洲策略组",
+        "欧洲",
+        "Europe",
+        "EU",
+      ],
     };
   }
 
@@ -516,9 +545,15 @@ async function operator(input, targetPlatform, context) {
       "🇯🇵 日本策略组",
       "🇸🇬 新加坡策略组",
       "🇹🇼 台湾策略组",
+      "🇪🇺 欧洲策略组",
       "🇺🇸 美国优化策略组",
       "🇺🇸 美国落地策略组",
       "🇺🇸 美国家宽策略组",
+      "🎁 赠送策略组",
+      "🎁赠送策略组",
+      "赠送策略组",
+      "赠送",
+      "🇭🇰 赠送策略组",
       "🌐 Other",
     ];
 
@@ -546,7 +581,7 @@ async function operator(input, targetPlatform, context) {
     const raw = String(tag || "").trim();
     if (!raw) return false;
 
-    // 模板旧地区短名 / 已废弃的赠送组：无对应节点时清掉空壳
+    // 模板旧地区短名 / 赠送组：无对应节点时清掉空壳
     if (/^[A-Z]{2}$/.test(raw)) return true;
 
     const staleNames = new Set([
@@ -565,6 +600,8 @@ async function operator(input, targetPlatform, context) {
       "香港",
       "🇭🇰 香港策略组",
       "香港策略组",
+      "🎁 赠送策略组",
+      "🎁赠送策略组",
       "赠送",
       "🇭🇰 赠送策略组",
       "赠送策略组",
@@ -949,7 +986,7 @@ async function operator(input, targetPlatform, context) {
     return uniqueList(result);
   }
 
-  // 收集 Auto Select 成员：仅新加坡 + 美国优化（不含赠送以外的其它地区）
+  // 收集 Auto Select 成员：仅新加坡 + 美国优化（不含赠送组与其它地区）
   function collectAutoSelectNodeTags() {
     const result = [];
     for (const tag of collectExistingLeafProxyTags()) {
@@ -2364,10 +2401,42 @@ async function operator(input, targetPlatform, context) {
     if (isReservedOutboundTag(raw)) return null;
 
     const baseName = stripLeadingFlag(raw);
-    // 去掉 [赠] 等前缀后再识别地区；赠送节点按真实地区归组，不再单独成组
+
+    // 赠送标记优先于国家/地区识别，名称任意位置含「赠」均进入赠送组。
+    if (/赠/.test(raw)) {
+      const gift = getGiftGroupDef();
+      return {
+        raw,
+        flag: "🎁",
+        baseName,
+        regionCode: null,
+        usBucket: null,
+        groupName: gift.groupName,
+        extraAliases: gift.aliases,
+        key: gift.key,
+        isOther: false,
+      };
+    }
+
+    // 去掉方括号前缀后再识别地区。
     const regionCode = getRegionCode(baseName);
 
-    // 固定国家之外（含无法识别地区）一律 Other
+    if (regionCode && EUROPE_REGION_CODES.has(regionCode)) {
+      const europe = getEuropeGroupDef();
+      return {
+        raw,
+        flag: "🇪🇺",
+        baseName,
+        regionCode: "EU",
+        usBucket: null,
+        groupName: europe.groupName,
+        extraAliases: europe.aliases,
+        key: europe.key,
+        isOther: false,
+      };
+    }
+
+    // 固定国家和欧洲之外（含无法识别地区）一律 Other
     if (!regionCode || !FIXED_REGION_CODES.has(regionCode)) {
       const other = getOtherGroupDef();
       return {
@@ -2448,7 +2517,7 @@ async function operator(input, targetPlatform, context) {
     const text = String(raw || "").trim();
     if (!text) return null;
 
-    // 去掉 [赠] 等前缀后再识别地区
+    // 去掉方括号前缀后再识别地区
     const cleaned = text.replace(/^\[[^\]]*\]/g, "").trim();
 
     const firstPart = cleaned.split("-")[0];
@@ -2531,7 +2600,55 @@ const COUNTRY_CODE_ALIASES = {
   SGP: "SG",
 };
 
-// 仅这些国家单独建组；德/港及其余全部进 Other
+// 联合国 M49 的欧洲主权国家；统一合并为欧洲策略组。
+const EUROPE_REGION_CODES = new Set([
+  "AD",
+  "AL",
+  "AT",
+  "BA",
+  "BE",
+  "BG",
+  "BY",
+  "CH",
+  "CZ",
+  "DE",
+  "DK",
+  "EE",
+  "ES",
+  "FI",
+  "FR",
+  "GB",
+  "GR",
+  "HR",
+  "HU",
+  "IE",
+  "IS",
+  "IT",
+  "LI",
+  "LT",
+  "LU",
+  "LV",
+  "MC",
+  "MD",
+  "ME",
+  "MK",
+  "MT",
+  "NL",
+  "NO",
+  "PL",
+  "PT",
+  "RO",
+  "RS",
+  "RU",
+  "SE",
+  "SI",
+  "SK",
+  "SM",
+  "UA",
+  "VA",
+]);
+
+// 仅这些国家单独建组；欧洲统一进欧洲组，香港及其余全部进 Other
 const FIXED_REGION_CODES = new Set(["JP", "SG", "TW", "US"]);
 
 function parseBoolish(value, defaultValue) {
@@ -2753,71 +2870,37 @@ function getProviderSortRank(name) {
 }
 
 const KNOWN_REGION_CODES = new Set([
+  ...EUROPE_REGION_CODES,
   "AE",
   "AR",
-  "AT",
   "AU",
-  "BE",
-  "BG",
   "BH",
   "BR",
-  "BY",
   "CA",
-  "CH",
   "CL",
   "CN",
   "CO",
-  "CZ",
-  "DE",
-  "DK",
-  "EE",
   "EG",
-  "ES",
-  "FI",
-  "FR",
-  "GB",
-  "GR",
   "HK",
-  "HR",
-  "HU",
   "ID",
-  "IE",
   "IL",
   "IN",
-  "IS",
-  "IT",
   "JP",
   "KR",
   "KZ",
-  "LT",
-  "LU",
-  "LV",
   "MA",
-  "MD",
-  "MK",
   "MO",
   "MX",
   "MY",
   "NG",
-  "NL",
-  "NO",
   "NZ",
   "PH",
   "PK",
-  "PL",
-  "PT",
-  "RO",
-  "RS",
-  "RU",
   "SA",
-  "SE",
   "SG",
-  "SI",
-  "SK",
   "TH",
   "TR",
   "TW",
-  "UA",
   "US",
   "VN",
   "ZA",

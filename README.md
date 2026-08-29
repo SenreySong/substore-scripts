@@ -72,6 +72,8 @@ https://raw.githubusercontent.com/SenreySong/substore-scripts/main/sing-box/subs
 - **`♾️Auto Select`**：仅挂 **新加坡 + 美国优化** 节点的 urltest（非全节点，降低 Windows TUN 风险）；专供 **rule_set / dashboard 下载**。
 - **Main Proxy** 成员：地区组 + Direct（不挂 Auto Select）；**default = 成员列表第一项**。
 - 地区组默认类型：`selector`。
+- 英国、德国等欧洲国家统一进入 **`🇪🇺 欧洲策略组`**；香港及其他未单列地区进入 `🌐 Other`。
+- 节点名任意位置包含 **`赠`** 的节点优先进入 **`🎁 赠送策略组`**，不再按原国家或地区归组。
 - 默认开启 `interrupt_exist_connections`：切换节点/策略组时打断既有连接（可用参数关闭）。
 - 广告 / QUIC 拦截使用 `action: reject` + `method: drop`。
 - 美国子组展示名：优化 / **落地** / 家宽（兼容旧名「直连」）。
