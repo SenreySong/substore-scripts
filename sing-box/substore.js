@@ -306,6 +306,12 @@ async function operator(input, targetPlatform, context) {
         (item) => item && normalizePolicyTag(item.tag) === "github",
       )
       .map((item) => item.tag),
+    // Clash mode 由模板定义；保留其 GLOBAL/Global 组原有成员。
+    ...originalGroups
+      .filter(
+        (item) => item && normalizePolicyTag(item.tag) === "global",
+      )
+      .map((item) => item.tag),
     "🇨🇳China Services",
     "🌸Bahamut",
     "📺Bilibili",
@@ -344,7 +350,6 @@ async function operator(input, targetPlatform, context) {
 
   // 清洗：删「全部节点」、保留 Auto Select，去掉悬空引用
   removeUnusedAllNodesGroup();
-  removeClashGlobalGroup();
   sanitizePolicyGroupMembers();
   // 国家/地区策略组排在所有策略组最前
   reorderOutboundsPutRegionsFirst(regionGroupTagsOrdered);
@@ -1105,36 +1110,6 @@ async function operator(input, targetPlatform, context) {
     );
     existingTags.delete("全部节点");
     originalGroupTags.delete("全部节点");
-  }
-
-  // 去掉仅服务 clash 模式的 GLOBAL 组
-  function removeClashGlobalGroup() {
-    const globalGroup = findOutboundByTag("GLOBAL");
-    if (!globalGroup && !findOutboundByTag("Global")) return;
-
-    for (const tag of ["GLOBAL", "Global"]) {
-      if (!findOutboundByTag(tag)) continue;
-
-      for (const outbound of config.outbounds) {
-        if (!outbound || !Array.isArray(outbound.outbounds)) continue;
-        outbound.outbounds = outbound.outbounds.filter((item) => item !== tag);
-        if (outbound.default === tag) {
-          syncSelectorDefault(outbound);
-        }
-      }
-
-      for (const rule of config.route.rules || []) {
-        if (rule && rule.outbound === tag) {
-          rule.outbound = MAIN_PROXY_TAG;
-        }
-      }
-
-      config.outbounds = config.outbounds.filter(
-        (item) => !(item && item.tag === tag),
-      );
-      existingTags.delete(tag);
-      originalGroupTags.delete(tag);
-    }
   }
 
   // 去掉策略组里不存在的 tag，防止 initialize outbound: missing tags
@@ -2026,8 +2001,8 @@ async function operator(input, targetPlatform, context) {
     const managed = getManagedGfsRules();
     const managedById = new Map(managed.map((item) => [item.id, item]));
 
-    // 顺序：sniff/dns → 拒绝 → 分流（精确→应用）→ private → CN → !CN
-    // 不注入 clash_mode，纯 sing-box TUN 规则模式
+    // 顺序：sniff/dns → Clash mode → 拒绝 → 分流（精确→应用）→ private → CN → !CN
+    // 不主动注入 clash_mode，仅保留模板已有模式规则。
     // 模板已自带 AD/AI/Apple/Google/Microsoft/Telegram/CN 等规则，脚本只补充独有规则
     const managedTiers = {
       // 拒绝类靠前（quic）
@@ -2063,6 +2038,7 @@ async function operator(input, targetPlatform, context) {
       : [];
 
     const infra = [];
+    const clashModeKept = [];
     const rejectKept = [];
     const precise = [];
     const privateKept = [];
@@ -2072,8 +2048,10 @@ async function operator(input, targetPlatform, context) {
     for (const rule of existingRules) {
       if (!rule || typeof rule !== "object") continue;
       if (isLocalOnlyRule(rule)) continue;
-      // 去掉 clash 模式规则，走默认 sing-box TUN 分流即可
-      if (rule.clash_mode) continue;
+      if (rule.clash_mode) {
+        clashModeKept.push(rule);
+        continue;
+      }
       if (managed.some((item) => item.test(rule))) continue;
 
       if (isInfraRouteRule(rule)) {
@@ -2097,15 +2075,17 @@ async function operator(input, targetPlatform, context) {
     config.route.rules = [
       // 1. sniff / DNS 最前
       ...infra,
-      // 2. 拒绝类（模板 + quic）
+      // 2. 模板 Clash mode 优先于普通分流，保证 Direct / Global 模式生效
+      ...clashModeKept,
+      // 3. 拒绝类（模板 + quic）
       ...rejectKept,
       ...managedRulesOf(managedTiers.reject),
-      // 3. 脚本精确规则优先于模板宽泛规则（如 YouTube 须在 Google 之前）
+      // 4. 脚本精确规则优先于模板宽泛规则（如 YouTube 须在 Google 之前）
       ...managedRulesOf(managedTiers.specific),
-      // 4. 模板精确规则（域名/进程/应用）
+      // 5. 模板精确规则（域名/进程/应用）
       ...precise,
       ...managedRulesOf(managedTiers.divert),
-      // 5. Private / CN / !CN 大盘靠后（CN 规则集由模板自带，不再重复注入）
+      // 6. Private / CN / !CN 大盘靠后（CN 规则集由模板自带，不再重复注入）
       ...privateKept,
       ...managedRulesOf(managedTiers.private),
       ...cnKept,

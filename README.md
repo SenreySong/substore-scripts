@@ -77,6 +77,7 @@ https://raw.githubusercontent.com/SenreySong/substore-scripts/main/sing-box/subs
 - 默认开启 `interrupt_exist_connections`：切换节点/策略组时打断既有连接（可用参数关闭）。
 - 广告 / QUIC 拦截使用 `action: reject` + `method: drop`。
 - 美国子组展示名：优化 / **落地** / 家宽（兼容旧名「直连」）。
+- 保留模板 `route.rules` 中已有的 `clash_mode` 规则及其 `GLOBAL` / `Global` 策略组，不主动注入模式规则。
 - 按 1.14 开启 `experimental.cache_file`（`store_fakeip` + `store_dns`）。
 - **Fake-IP**（`DNS-FAKEIP` 的 `inet4_range` / `inet6_range`、相关 DNS 规则、`dns.strategy`）**完全按配置模板**，脚本不改写；样本见 `examples/config.sample.json`。
 - 关闭 Clash API；开启官方 `services` API + dashboard（`127.0.0.1:9090`）。
