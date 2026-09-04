@@ -107,7 +107,6 @@ async function operator(input, targetPlatform, context) {
   stripBrokenPolicyGroups(config);
 
   applySingBox114Dns(config);
-  applySingBox114CacheFile(config);
   applySingBox114ApiDashboard(config);
 
   const originalGroups = config.outbounds.filter(isPolicyGroup);
@@ -2180,36 +2179,6 @@ async function operator(input, targetPlatform, context) {
       }
       return false;
     }
-  }
-
-  // sing-box 1.14：独立 cache_file；store_rdrc 已废弃，改用 store_dns
-  // 参考：https://sing-box.sagernet.org/configuration/experimental/cache-file/
-  function applySingBox114CacheFile(targetConfig) {
-    if (!targetConfig.experimental || typeof targetConfig.experimental !== "object") {
-      targetConfig.experimental = {};
-    }
-
-    const prev =
-      targetConfig.experimental.cache_file &&
-      typeof targetConfig.experimental.cache_file === "object"
-        ? targetConfig.experimental.cache_file
-        : {};
-
-    targetConfig.experimental.cache_file = {
-      enabled: true,
-      // 空则默认 cache.db；保留模板自定义 path / cache_id
-      path: prev.path || "cache.db",
-      store_fakeip: true,
-      store_dns: true,
-    };
-
-    if (prev.cache_id) {
-      targetConfig.experimental.cache_file.cache_id = prev.cache_id;
-    }
-
-    // 废弃字段清理（1.14 起 store_rdrc → store_dns）
-    delete targetConfig.experimental.cache_file.store_rdrc;
-    delete targetConfig.experimental.cache_file.rdrc_timeout;
   }
 
   // 关闭 Clash API，开启 sing-box 1.14 官方 API + Dashboard
