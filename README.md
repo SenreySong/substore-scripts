@@ -81,8 +81,8 @@ https://raw.githubusercontent.com/SenreySong/substore-scripts/main/sing-box/subs
 - **缓存配置**（`experimental.cache_file`）完全按模板，脚本不改写。
 - **Fake-IP**（`DNS-FAKEIP` 的 `inet4_range` / `inet6_range`、相关 DNS 规则、`dns.strategy`）**完全按配置模板**，脚本不改写；样本见 `examples/config.sample.json`。
 - 关闭 Clash API；开启官方 `services` API + dashboard（`127.0.0.1:9090`）。
-- **TUN 入站**（`address` / `route_exclude_address` / `dns_mode` / `dns_address` 等）**完全按模板**，脚本不改写。
-- 路由侧在缺少时补 `hijack-dns`（`protocol: dns` / `port: 53`），不改动 TUN 对象。
+- **TUN 入站**删除 1.15 已弃用的 `stack`，启用 sing-tun 新 TCP/IP 栈；其余字段完全按模板。
+- 路由侧在缺少时补 `hijack-dns`（`protocol: dns` / `port: 53`），不额外改写 TUN 的 DNS 配置。
 - **mixed 入站** `listen` 强制为 `0.0.0.0`（全接口，不仅本机）。
 
 ## 本地开发

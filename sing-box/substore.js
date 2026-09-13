@@ -106,6 +106,7 @@ async function operator(input, targetPlatform, context) {
   // （样例里 Auto Select.outbounds=[] 会直接触发 missing tags）
   stripBrokenPolicyGroups(config);
 
+  applySingBox115TunStack(config);
   applySingBox114Dns(config);
   applySingBox114ApiDashboard(config);
 
@@ -2230,6 +2231,19 @@ async function operator(input, targetPlatform, context) {
     }
   }
 
+  // 1.15 使用 sing-tun 自研 TCP/IP 栈；删除 stack 才会启用新实现。
+  function applySingBox115TunStack(targetConfig) {
+    for (const inbound of Array.isArray(targetConfig.inbounds)
+      ? targetConfig.inbounds
+      : []) {
+      if (!inbound || typeof inbound !== "object" || inbound.type !== "tun") {
+        continue;
+      }
+
+      delete inbound.stack;
+    }
+  }
+
   function applySingBox114Dns(targetConfig) {
     if (!targetConfig.dns || typeof targetConfig.dns !== "object") {
       throw new Error("配置模板缺少 dns 配置");
@@ -2281,7 +2295,6 @@ async function operator(input, targetPlatform, context) {
       if (!inbound || typeof inbound !== "object") continue;
 
       // mixed 入站：监听全部地址，供局域网设备使用
-      // TUN 入站完全按模板，脚本不改写
       if (inbound.type === "mixed") {
         applyMixedInboundListenAll(inbound);
       }
