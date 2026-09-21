@@ -77,9 +77,10 @@ https://raw.githubusercontent.com/SenreySong/substore-scripts/main/sing-box/subs
 - 默认开启 `interrupt_exist_connections`：切换节点/策略组时打断既有连接（可用参数关闭）。
 - 广告 / QUIC 拦截使用 `action: reject` + `method: drop`。
 - 美国子组展示名：优化 / **落地** / 家宽（兼容旧名「直连」）。
-- 保留模板 `route.rules` 中已有的 `clash_mode` 规则及其 `GLOBAL` / `Global` 策略组，不主动注入模式规则。
+- 保留模板已有的 `clash_mode` 规则及其 `GLOBAL` / `Global` 策略组；缺少时补齐 `Direct` / `Global` 路由规则，分别使用 Direct / Main Proxy，排在嗅探和 DNS 劫持之后、普通分流之前。
+- DNS 同样补齐缺失的模式规则：`Direct` 使用 `DNS-DIRECT`，`Global` 使用 `DNS-PROXY`，优先于普通 DNS 规则；规则模式继续使用模板原有 DNS 分流和 Fake-IP。
 - **缓存配置**（`experimental.cache_file`）完全按模板，脚本不改写。
-- **Fake-IP**（`DNS-FAKEIP` 的 `inet4_range` / `inet6_range`、相关 DNS 规则、`dns.strategy`）**完全按配置模板**，脚本不改写；样本见 `examples/config.sample.json`。
+- **Fake-IP**（`DNS-FAKEIP` 的 `inet4_range` / `inet6_range`、原有 DNS 规则、`dns.strategy`）保留模板配置；新增的全局 / 直连 DNS 模式规则优先匹配，规则模式不受影响。样本见 `examples/config.sample.json`。
 - 关闭 Clash API；开启官方 `services` API + dashboard（`127.0.0.1:9090`）。
 - **TUN 入站**删除 1.15 已弃用的 `stack`，启用 sing-tun 新 TCP/IP 栈；其余字段完全按模板。
 - 路由侧在缺少时补 `hijack-dns`（`protocol: dns` / `port: 53`），不额外改写 TUN 的 DNS 配置。

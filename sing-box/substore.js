@@ -345,6 +345,7 @@ async function operator(input, targetPlatform, context) {
     syncSelectorDefault(group);
   }
 
+  ensureClashModeRules();
   applyGfsRouteAndRulesets(RULE_SET_DETOUR);
   applyDownloadDetourToDashboard(RULE_SET_DETOUR);
 
@@ -1991,6 +1992,39 @@ async function operator(input, targetPlatform, context) {
     return hasAnyRuleSet(rule, ["GeoIP-Private", "GeoSite-Private"]);
   }
 
+  function ensureClashModeRules() {
+    const modes = [
+      { mode: "Direct", outbound: "Direct", server: "DNS-DIRECT" },
+      {
+        mode: "Global",
+        outbound: appTagMap.mainProxy || MAIN_PROXY_TAG,
+        server: "DNS-PROXY",
+      },
+    ];
+
+    // 保留模板的模式定义，包括逻辑规则中的条件，避免重复注入。
+    function hasMode(rules, mode) {
+      return rules.some(
+        (rule) =>
+          rule &&
+          (rule.clash_mode === mode ||
+            (Array.isArray(rule.rules) && hasMode(rule.rules, mode))),
+      );
+    }
+
+    for (const { mode, outbound } of modes) {
+      if (!hasMode(config.route.rules, mode)) {
+        config.route.rules.push({ clash_mode: mode, action: "route", outbound });
+      }
+    }
+
+    // 模式 DNS 优先于普通分流和 Fake-IP；规则模式继续使用模板原有规则。
+    const missingDnsRules = modes
+      .filter(({ mode }) => !hasMode(config.dns.rules, mode))
+      .map(({ mode, server }) => ({ clash_mode: mode, action: "route", server }));
+    config.dns.rules.unshift(...missingDnsRules);
+  }
+
   function applyGfsRouteAndRulesets(detour) {
     const downloadDetour = detour || MAIN_PROXY_TAG;
 
@@ -2002,7 +2036,7 @@ async function operator(input, targetPlatform, context) {
     const managedById = new Map(managed.map((item) => [item.id, item]));
 
     // 顺序：sniff/dns → Clash mode → 拒绝 → 分流（精确→应用）→ private → CN → !CN
-    // 不主动注入 clash_mode，仅保留模板已有模式规则。
+    // 保留模板模式规则，并将补齐的模式规则排在普通分流之前。
     // 模板已自带 AD/AI/Apple/Google/Microsoft/Telegram/CN 等规则，脚本只补充独有规则
     const managedTiers = {
       // 拒绝类靠前（quic）
