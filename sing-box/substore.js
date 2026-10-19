@@ -1,8 +1,8 @@
 async function operator(input, targetPlatform, context) {
-  // 仅接受 collectionName，其余行为写死在脚本内
+  // collectionName 必填，切换连接行为可通过 interruptExistConnections 覆盖
   // Sub-Store 远程脚本传参格式（注意：多个参数用 &，不要写多个 #）：
   //   https://example.com/script.js#collectionName=VPS-ALL&noCache
-  // 也可在前端「参数」表里配置 key=collectionName
+  // 非 link 模式才使用前端参数表
   const args =
     typeof $arguments !== "undefined" &&
     typeof $arguments === "object" &&
@@ -28,12 +28,8 @@ async function operator(input, targetPlatform, context) {
       args.interrupt,
     true,
   );
-  // 运行时由 ensureAutoSelectGroup 决定：有节点则 Auto Select，否则 Direct
-  let RULE_SET_DETOUR = AUTO_SELECT_TAG;
-
   // 逻辑名 → 实际 outbound tag（优先复用模板已有组）
   const appTagMap = {
-    allNodes: AUTO_SELECT_TAG,
     mainProxy: MAIN_PROXY_TAG,
     openai: "OpenAI",
     ai: "AI",
@@ -45,7 +41,6 @@ async function operator(input, targetPlatform, context) {
     apple: "Apple",
     streaming: "国外流媒体",
     youtube: "",
-    disney: "",
     spotify: "Spotify",
     microsoft: "Microsoft",
   };
@@ -71,6 +66,7 @@ async function operator(input, targetPlatform, context) {
       : JSON;
 
   const config = parser.parse(input.$content);
+  validateTemplate(config);
 
   if (!Array.isArray(config.outbounds)) {
     config.outbounds = [];
@@ -106,9 +102,8 @@ async function operator(input, targetPlatform, context) {
   // （样例里 Auto Select.outbounds=[] 会直接触发 missing tags）
   stripBrokenPolicyGroups(config);
 
-  applySingBox115TunStack(config);
-  applySingBox114Dns(config);
-  applySingBox114ApiDashboard(config);
+  // 旧 Clash API 与原生 API 不共用面板；原生服务及认证字段沿用模板。
+  if (config.experimental) delete config.experimental.clash_api;
 
   const originalGroups = config.outbounds.filter(isPolicyGroup);
   const originalGroupTags = new Set(
@@ -121,14 +116,12 @@ async function operator(input, targetPlatform, context) {
     "Proxy",
     "PROXY",
     "proxy",
-    "Block",
     "Reject",
     "REJECT",
     "reject",
     "Global",
     "GLOBAL",
     "COMPATIBLE",
-    "Bittorrent",
   ]);
 
   const generated = await produceArtifact({
@@ -144,16 +137,9 @@ async function operator(input, targetPlatform, context) {
   const incomingOutbounds = Array.isArray(data.outbounds) ? data.outbounds : [];
   const incomingEndpoints = Array.isArray(data.endpoints) ? data.endpoints : [];
 
-  for (const outbound of incomingOutbounds) {
-    if (!outbound || typeof outbound !== "object") continue;
-    if (!outbound.tag && outbound.name) outbound.tag = String(outbound.name);
-    delete outbound.domain_strategy;
-  }
-
-  for (const endpoint of incomingEndpoints) {
-    if (!endpoint || typeof endpoint !== "object") continue;
-    if (!endpoint.tag && endpoint.name) endpoint.tag = String(endpoint.name);
-    delete endpoint.domain_strategy;
+  // 仅适配订阅生成的旧拨号字段，不再对完整模板执行版本迁移。
+  for (const nodes of [incomingOutbounds, incomingEndpoints]) {
+    for (const node of nodes) normalizeIncomingNode(node);
   }
 
   const existingTags = new Set([
@@ -213,8 +199,6 @@ async function operator(input, targetPlatform, context) {
   // 先把节点写入 config，再建策略组，避免 selector 引用尚不存在的 tag
   config.outbounds.push(...addedOutbounds);
   config.endpoints.push(...addedEndpoints);
-  addedOutbounds.length = 0;
-  addedEndpoints.length = 0;
 
   const allNodeTags = collectAllNodeTags();
   const nodeTagSet = new Set(allNodeTags);
@@ -235,7 +219,7 @@ async function operator(input, targetPlatform, context) {
   }
 
   for (const bucket of buckets.values()) {
-    bucket.nodeTags = sortNodeTags(bucket.info, bucket.nodeTags);
+    bucket.nodeTags = sortRegionNodeTags(bucket.nodeTags);
   }
 
   const generatedGroupTags = [];
@@ -260,17 +244,10 @@ async function operator(input, targetPlatform, context) {
   pruneStaleRegionShells(generatedGroupTagSet);
   const regionGroupTagsOrdered = orderRegionGroupTags(generatedGroupTags);
 
-  ensureBuiltinOutbounds();
+  ensureDirectOutbound();
 
   // Auto Select：只挂新加坡 + 美国优化，供 rule_set / dashboard 下载
   const autoSelectGroup = ensureAutoSelectGroup();
-  if (autoSelectGroup) {
-    RULE_SET_DETOUR = AUTO_SELECT_TAG;
-    appTagMap.allNodes = AUTO_SELECT_TAG;
-  } else {
-    RULE_SET_DETOUR = "Direct";
-    appTagMap.allNodes = "";
-  }
 
   const managedAppGroupTags = ensureGfsAppGroups(
     regionGroupTagsOrdered,
@@ -297,7 +274,6 @@ async function operator(input, targetPlatform, context) {
     appTagMap.apple,
     appTagMap.streaming,
     appTagMap.youtube,
-    appTagMap.disney,
     appTagMap.spotify,
     appTagMap.microsoft,
     // GitHub 不再由脚本接管；模板已有组保持原有成员与规则关系。
@@ -345,29 +321,14 @@ async function operator(input, targetPlatform, context) {
     syncSelectorDefault(group);
   }
 
-  ensureClashModeRules();
-  applyGfsRouteAndRulesets(RULE_SET_DETOUR);
-  applyDownloadDetourToDashboard(RULE_SET_DETOUR);
+  applyGfsRouteAndRulesets();
 
-  // 清洗：删「全部节点」、保留 Auto Select，去掉悬空引用
+  // 所有组装和引用替换结束后，仅清洗一次，再排序和配置下载路径。
   removeUnusedAllNodesGroup();
   sanitizePolicyGroupMembers();
-  // 国家/地区策略组排在所有策略组最前
   reorderOutboundsPutRegionsFirst(regionGroupTagsOrdered);
-  // 重排后再清洗一次 default / 悬空引用
-  sanitizePolicyGroupMembers();
-  // 最终硬校验：任何策略组不得再引用不存在的 tag / 不得为空
-  // （不再删除非空的 Auto Select）
-  stripBrokenPolicyGroups(config);
-  // strip 之后再确保 Auto Select 仍在且成员正确，并统一下载 detour
-  const autoAfterStrip = ensureAutoSelectGroup();
-  RULE_SET_DETOUR = autoAfterStrip ? AUTO_SELECT_TAG : "Direct";
-  syncAllRemoteDownloadDetours(RULE_SET_DETOUR);
-  sanitizePolicyGroupMembers();
-  // 收尾再统一一次 Direct/direct，避免中途又被塞进小写 direct
-  normalizeDirectOutbounds(config);
-  sanitizePolicyGroupMembers();
-  // 统一写入：切换节点/策略组是否打断既有连接
+  const downloadDetour = autoSelectGroup ? AUTO_SELECT_TAG : "Direct";
+  syncAllRemoteDownloadDetours(downloadDetour);
   applyInterruptExistConnections(INTERRUPT_EXIST_CONNECTIONS);
 
   input.$content = JSON.stringify(config, null, 2);
@@ -667,10 +628,6 @@ async function operator(input, targetPlatform, context) {
     }
   }
 
-  function sortNodeTags(_info, nodeTags) {
-    return sortRegionNodeTags(nodeTags);
-  }
-
   function collectAllNodeTags() {
     const result = [];
     const seen = new Set();
@@ -832,7 +789,6 @@ async function operator(input, targetPlatform, context) {
     if (Array.isArray(info.extraAliases)) {
       for (const alias of info.extraAliases) {
         aliases.push(alias);
-        aliases.push(alias);
       }
     }
 
@@ -931,24 +887,15 @@ async function operator(input, targetPlatform, context) {
     return config.outbounds.find((item) => item && item.tag === tag);
   }
 
-  function ensurePlainOutbound(tag, type) {
-    let item = findOutboundByTag(tag);
-    if (item) return item;
+  function ensureDirectOutbound() {
+    if (findOutboundByTag("Direct")) return;
 
-    item = { type, tag };
-    if (type === "direct" && tag === "Direct") {
-      item.domain_resolver = "DNS-DIRECT";
-    }
-
-    config.outbounds.push(item);
-    existingTags.add(tag);
-    return item;
-  }
-
-  function ensureBuiltinOutbounds() {
-    ensurePlainOutbound("Direct", "direct");
-    ensurePlainOutbound("Block", "block");
-    ensurePlainOutbound("Bittorrent", "direct");
+    config.outbounds.push({
+      type: "direct",
+      tag: "Direct",
+      domain_resolver: "DNS-DIRECT",
+    });
+    existingTags.add("Direct");
   }
 
   function isLeafProxyOutbound(outbound) {
@@ -1019,7 +966,6 @@ async function operator(input, targetPlatform, context) {
       );
       existingTags.delete(AUTO_SELECT_TAG);
       originalGroupTags.delete(AUTO_SELECT_TAG);
-      appTagMap.allNodes = "";
       return null;
     }
 
@@ -1047,11 +993,10 @@ async function operator(input, targetPlatform, context) {
       delete group.default;
     }
 
-    appTagMap.allNodes = AUTO_SELECT_TAG;
     return group;
   }
 
-  // 统一 remote rule_set + dashboard 的下载 detour
+  // 在 Auto Select 最终确定后，统一写入规则集和面板的下载配置
   function syncAllRemoteDownloadDetours(detour) {
     const d = detour || "Direct";
     for (const item of Array.isArray(config.route.rule_set)
@@ -1059,27 +1004,26 @@ async function operator(input, targetPlatform, context) {
       : []) {
       if (!item || item.type !== "remote") continue;
       delete item.download_detour;
-      item.http_client = buildRuleSetHttpClient(d);
+      item.http_client = buildDownloadHttpClient(item.http_client, d);
     }
     applyDownloadDetourToDashboard(d);
   }
 
   function applyDownloadDetourToDashboard(detour) {
-    const d = detour || "Direct";
-    if (!Array.isArray(config.services)) return;
+    for (const service of config.services) {
+      if (!service || service.type !== "api") continue;
 
-    for (const svc of config.services) {
-      if (!svc || svc.type !== "api") continue;
-
-      if (svc.dashboard === true || svc.dashboard == null) {
-        svc.dashboard = {
-          enabled: true,
-          http_client: buildRuleSetHttpClient(d),
-        };
-      } else if (typeof svc.dashboard === "object") {
-        svc.dashboard.enabled = true;
-        svc.dashboard.http_client = buildRuleSetHttpClient(d);
-      }
+      const dashboard = service.dashboard;
+      const options = typeof dashboard === "string"
+        ? { path: dashboard }
+        : dashboard && typeof dashboard === "object"
+          ? dashboard
+          : {};
+      service.dashboard = {
+        ...options,
+        enabled: true,
+        http_client: buildDownloadHttpClient(options.http_client, detour),
+      };
     }
   }
 
@@ -1130,9 +1074,7 @@ async function operator(input, targetPlatform, context) {
         if (typeof rawTag !== "string" || !rawTag) continue;
         const tag = canonicalizeMemberTag(rawTag);
         // Direct 统一后，可用集合里可能只有 Direct
-        if (!available.has(tag) && !(isDirectAliasTag(rawTag) && available.has("Direct"))) {
-          continue;
-        }
+        if (!available.has(tag)) continue;
         // 禁止自引用
         if (tag === outbound.tag) continue;
         // 业务策略组不挂 Auto Select / 全部节点（Auto 仅用于下载）
@@ -1178,7 +1120,6 @@ async function operator(input, targetPlatform, context) {
 
   // 国家/地区策略组排在所有策略组最前面，节点 outbound 仍在后
   function reorderOutboundsPutRegionsFirst(regionTags) {
-    const regionSet = new Set(regionTags || []);
     const regionGroups = [];
     const otherGroups = [];
     const leaves = [];
@@ -1254,7 +1195,6 @@ async function operator(input, targetPlatform, context) {
   function canonicalizeMemberTag(tag) {
     if (typeof tag !== "string") return tag;
     if (isDirectAliasTag(tag)) return "Direct";
-    if (/^block$/i.test(tag.trim())) return "Block";
     return tag;
   }
 
@@ -1269,14 +1209,13 @@ async function operator(input, targetPlatform, context) {
 
     for (const outbound of targetConfig.outbounds) {
       if (!outbound || typeof outbound !== "object") continue;
-      // 只合并「内置直连」本体；Bittorrent 等其它 type=direct 不动
+      // 只合并「内置直连」本体，其它自定义直连出站不动
       if (String(outbound.type || "") !== "direct") continue;
       if (!isDirectAliasTag(outbound.tag)) continue;
 
       if (!keep) {
         keep = outbound;
         keep.tag = DIRECT_TAG;
-        if (keep.type !== "direct") keep.type = "direct";
       } else {
         toRemove.add(outbound);
       }
@@ -1360,10 +1299,11 @@ async function operator(input, targetPlatform, context) {
     if (!targetConfig || !Array.isArray(targetConfig.outbounds)) return;
 
     const AUTO = AUTO_SELECT_TAG;
-    const available = () =>
-      new Set(
-        targetConfig.outbounds.map((item) => item && item.tag).filter(Boolean),
-      );
+    const available = () => new Set([
+      ...targetConfig.outbounds.map((item) => item && item.tag).filter(Boolean),
+      ...targetConfig.endpoints.map((item) => item && item.tag).filter(Boolean),
+    ]);
+    const removedTags = new Set();
 
     // 业务组里不要挂 Auto（Auto 仅下载用）；Auto 自身成员保留
     for (const outbound of targetConfig.outbounds) {
@@ -1391,7 +1331,8 @@ async function operator(input, targetPlatform, context) {
             ),
           );
           if (!members.length) {
-            // 空策略组直接丢弃（避免 missing tags）
+            // 空组及其引用在节点合并前一并处理。
+            removedTags.add(outbound.tag);
             changed = true;
             continue;
           }
@@ -1415,7 +1356,7 @@ async function operator(input, targetPlatform, context) {
       targetConfig.outbounds = nextOutbounds;
     }
 
-    // 路由 / DNS 里指向已删组的，改 Main 或 Direct
+    // 只改写本次实际删除的组，不把未解析的配置错误静默掩盖为代理。
     const tags = available();
     const fallback = tags.has(MAIN_PROXY_TAG)
       ? MAIN_PROXY_TAG
@@ -1423,15 +1364,16 @@ async function operator(input, targetPlatform, context) {
         ? "Direct"
         : [...tags][0];
 
-    for (const rule of (targetConfig.route && targetConfig.route.rules) || []) {
-      if (rule && rule.outbound && !tags.has(rule.outbound)) {
-        rule.outbound = fallback;
+    function rewriteRemovedGroupRules(rules) {
+      for (const rule of rules) {
+        if (!rule || typeof rule !== "object") continue;
+        if (removedTags.has(rule.outbound)) rule.outbound = fallback;
+        if (Array.isArray(rule.rules)) rewriteRemovedGroupRules(rule.rules);
       }
     }
-    for (const server of (targetConfig.dns && targetConfig.dns.servers) || []) {
-      if (server && server.detour && !tags.has(server.detour)) {
-        server.detour = fallback;
-      }
+    rewriteRemovedGroupRules(targetConfig.route.rules);
+    for (const server of targetConfig.dns.servers) {
+      if (server && removedTags.has(server.detour)) server.detour = fallback;
     }
   }
 
@@ -1569,8 +1511,8 @@ async function operator(input, targetPlatform, context) {
     return tags;
   }
 
-  // 国外流媒体目前只承接 YouTube + Disney。
-  // 模板已有对应组（YouTube / Google、Disney）时不再新建，并删掉多余的流媒体组。
+  // 国外流媒体仅作为 YouTube 的兜底；Disney 分流完全由模板提供。
+  // 模板已有 YouTube / Google 组时不再新建，并删掉多余的流媒体组。
   function applyStreamingGroupPlan(regionPlusMain, tags) {
     const existingGroupTags = config.outbounds
       .filter((item) => item && isPolicyGroup(item) && item.tag)
@@ -1588,15 +1530,12 @@ async function operator(input, targetPlatform, context) {
       appTagMap.streaming = streamingTag;
       appTagMap.youtube =
         plan.youtube === plan.streamingTag ? streamingTag : plan.youtube;
-      appTagMap.disney =
-        plan.disney === plan.streamingTag ? streamingTag : plan.disney;
       if (group) tags.add(group.tag);
       return;
     }
 
     appTagMap.streaming = "";
     appTagMap.youtube = plan.youtube;
-    appTagMap.disney = plan.disney;
     if (plan.existingStreamingTag) {
       removeOutboundCompletely(plan.existingStreamingTag);
     }
@@ -1666,12 +1605,7 @@ async function operator(input, targetPlatform, context) {
         tag: "GeoSite-Private",
         url: `${geo}/geosite/private.srs`,
       },
-      {
-        tag: "GeoLocation-!CN",
-        url: `${geo}/geosite/geolocation-!cn.srs`,
-      },
       { tag: "openai", url: `${geo}/geosite/openai.srs` },
-      { tag: "disney", url: `${geo}/geosite/disney.srs` },
       { tag: "youtube", url: `${geo}/geosite/youtube.srs` },
       { tag: "spotify", url: `${geo}/geosite/spotify.srs` },
       { tag: "amazon", url: `${geo}/geosite/amazon.srs` },
@@ -1686,7 +1620,7 @@ async function operator(input, targetPlatform, context) {
     ];
   }
 
-  function ensureRemoteRuleset(def, detour) {
+  function ensureRemoteRuleset(def) {
     let item = config.route.rule_set.find(
       (entry) => entry && entry.tag === def.tag,
     );
@@ -1701,20 +1635,29 @@ async function operator(input, targetPlatform, context) {
     item.url = def.url;
     delete item.path;
     delete item.rules;
-    // sing-box 1.14：download_detour 已废弃，改用 http_client
-    delete item.download_detour;
-    item.http_client = buildRuleSetHttpClient(detour);
-
     return item;
   }
 
-  // 1.14 remote rule-set 下载走哪条出站（用户要求走主代理）
-  function buildRuleSetHttpClient(detour) {
-    return {
-      engine: "go",
-      version: 2,
-      detour: detour || MAIN_PROXY_TAG,
+  // 下载策略只覆盖 detour，保留模板显式指定的 HTTP、TLS 和请求头配置。
+  function buildDownloadHttpClient(client, detour) {
+    let options = client;
+    if (typeof client === "string" && client) {
+      options = (config.http_clients || []).find(
+        (item) => item && item.tag === client,
+      );
+      if (!options) {
+        throw new Error(`配置模板引用了不存在的 HTTP 客户端：${client}`);
+      }
+    }
+    const result = {
+      ...(options && typeof options === "object"
+        ? options
+        : { engine: "go", version: 2 }),
+      detour: detour || "Direct",
     };
+    // 引用共享客户端时创建内联副本，不改变其它组件使用的共享对象。
+    delete result.tag;
+    return result;
   }
 
   function ruleSetList(rule) {
@@ -1729,17 +1672,6 @@ async function operator(input, targetPlatform, context) {
     return tags.some((tag) => set.has(tag));
   }
 
-  function isLocalOnlyRule(rule) {
-    const sets = ruleSetList(rule);
-    if (!sets.length) return false;
-    return sets.every(
-      (tag) =>
-        tag === "本地直连专用" ||
-        tag === "本地代理专用" ||
-        /local/i.test(String(tag)),
-    );
-  }
-
   function getManagedGfsRules() {
     const t = {
       openai: appTagMap.openai || "OpenAI",
@@ -1747,9 +1679,7 @@ async function operator(input, targetPlatform, context) {
       twitter: appTagMap.twitter || "Twitter",
       amazonOracle: appTagMap.amazonOracle || "Amazon|Oracle",
       youtube: appTagMap.youtube || appTagMap.google || MAIN_PROXY_TAG,
-      disney: appTagMap.disney || appTagMap.streaming || MAIN_PROXY_TAG,
       spotify: appTagMap.spotify || "Spotify",
-      main: appTagMap.mainProxy || MAIN_PROXY_TAG,
     };
 
     return [
@@ -1770,29 +1700,6 @@ async function operator(input, targetPlatform, context) {
         },
       },
       {
-        id: "gfs-bt",
-        test: (rule) =>
-          Array.isArray(rule && rule.process_name) &&
-          rule.process_name.some((name) =>
-            /qBittorrent|Transmission|uTorrent|Folx|BitComet|Thunder|Xunlei/i.test(
-              String(name),
-            ),
-          ),
-        rule: {
-          action: "route",
-          process_name: [
-            "qBittorrent",
-            "Transmission",
-            "uTorrent",
-            "Folx",
-            "BitComet",
-            "Thunder",
-            "Xunlei",
-          ],
-          outbound: "Bittorrent",
-        },
-      },
-      {
         id: "gfs-quic",
         test: (rule) =>
           rule &&
@@ -1800,7 +1707,7 @@ async function operator(input, targetPlatform, context) {
           (rule.outbound === "Block" ||
             rule.action === "reject" ||
             rule.outbound === "block"),
-        // 同上：QUIC/UDP 拒绝不要 route 到 Block 出站
+        // UDP 拒绝通过规则动作处理，不创建特殊出站。
         rule: {
           action: "reject",
           protocol: "quic",
@@ -1841,16 +1748,6 @@ async function operator(input, targetPlatform, context) {
           action: "route",
           rule_set: ["spotify"],
           outbound: t.spotify,
-        },
-      },
-      {
-        id: "gfs-streaming",
-        test: (rule) =>
-          hasAnyRuleSet(rule, ["disney", "disney-geosite.json"]),
-        rule: {
-          action: "route",
-          rule_set: ["disney"],
-          outbound: t.disney,
         },
       },
       {
@@ -1896,21 +1793,6 @@ async function operator(input, targetPlatform, context) {
           outbound: "Direct",
         },
       },
-      {
-        id: "gfs-not-cn",
-        test: (rule) =>
-          hasAnyRuleSet(rule, [
-            "GeoLocation-!CN",
-            "aliyun@!cn-geosite.json",
-            "tencent@!cn-geosite.json",
-            "bytedance@!cn-geosite.json",
-          ]),
-        rule: {
-          action: "route",
-          rule_set: ["GeoLocation-!CN"],
-          outbound: t.main,
-        },
-      },
     ];
   }
 
@@ -1936,34 +1818,9 @@ async function operator(input, targetPlatform, context) {
     return false;
   }
 
-  // 拒绝类：广告 / quic / reject / Block —— 应紧跟 sniff/dns，先于分流
+  // 模板已使用规则动作；拒绝规则直接按 action 分类。
   function isRejectRouteRule(rule) {
-    if (!rule || typeof rule !== "object") return false;
-    if (isInfraRouteRule(rule)) return false;
-
-    if (rule.action === "reject") return true;
-
-    const outbound = String(rule.outbound || "");
-    if (/^(block|reject)$/i.test(outbound)) return true;
-
-    if (rule.protocol === "quic" && /^(block|reject)?$/i.test(outbound || "block")) {
-      // quic + Block / reject，或仅 protocol quic 的拒绝语义由 managed 处理
-      if (!outbound || /^(block|reject)$/i.test(outbound)) return true;
-    }
-
-    if (
-      hasAnyRuleSet(rule, [
-        "Category-Ads",
-        "category-httpdns-cn-ads",
-        "category-httpdns-cn@ads-geosite.json",
-        "AD-Site",
-      ]) &&
-      (rule.action === "reject" || /^(block|reject)$/i.test(outbound))
-    ) {
-      return true;
-    }
-
-    return false;
+    return rule && rule.action === "reject";
   }
 
   function isCnBroadRouteRule(rule) {
@@ -1977,84 +1834,36 @@ async function operator(input, targetPlatform, context) {
     ]);
   }
 
-  function isNotCnBroadRouteRule(rule) {
-    return hasAnyRuleSet(rule, [
-      "GeoLocation-!CN",
-      "aliyun@!cn-geosite.json",
-      "tencent@!cn-geosite.json",
-      "bytedance@!cn-geosite.json",
-    ]);
-  }
-
   function isPrivateRouteRule(rule) {
     if (!rule || typeof rule !== "object") return false;
     if (rule.ip_is_private === true) return true;
     return hasAnyRuleSet(rule, ["GeoIP-Private", "GeoSite-Private"]);
   }
 
-  function ensureClashModeRules() {
-    const modes = [
-      { mode: "Direct", outbound: "Direct", server: "DNS-DIRECT" },
-      {
-        mode: "Global",
-        outbound: appTagMap.mainProxy || MAIN_PROXY_TAG,
-        server: "DNS-PROXY",
-      },
-    ];
-
-    // 保留模板的模式定义，包括逻辑规则中的条件，避免重复注入。
-    function hasMode(rules, mode) {
-      return rules.some(
-        (rule) =>
-          rule &&
-          (rule.clash_mode === mode ||
-            (Array.isArray(rule.rules) && hasMode(rule.rules, mode))),
-      );
-    }
-
-    for (const { mode, outbound } of modes) {
-      if (!hasMode(config.route.rules, mode)) {
-        config.route.rules.push({ clash_mode: mode, action: "route", outbound });
-      }
-    }
-
-    // 模式 DNS 优先于普通分流和 Fake-IP；规则模式继续使用模板原有规则。
-    const missingDnsRules = modes
-      .filter(({ mode }) => !hasMode(config.dns.rules, mode))
-      .map(({ mode, server }) => ({ clash_mode: mode, action: "route", server }));
-    config.dns.rules.unshift(...missingDnsRules);
-  }
-
-  function applyGfsRouteAndRulesets(detour) {
-    const downloadDetour = detour || MAIN_PROXY_TAG;
-
+  function applyGfsRouteAndRulesets() {
     for (const def of getGfsRulesetDefs()) {
-      ensureRemoteRuleset(def, downloadDetour);
+      ensureRemoteRuleset(def);
     }
 
     const managed = getManagedGfsRules();
     const managedById = new Map(managed.map((item) => [item.id, item]));
 
-    // 顺序：sniff/dns → Clash mode → 拒绝 → 分流（精确→应用）→ private → CN → !CN
-    // 保留模板模式规则，并将补齐的模式规则排在普通分流之前。
+    // 顺序：sniff/dns → 模板模式 → 拒绝 → 分流（精确→应用）→ private → CN
+    // 不生成模式规则；模板自带的模式规则保持高优先级。
     // 模板已自带 AD/AI/Apple/Google/Microsoft/Telegram/CN 等规则，脚本只补充独有规则
     const managedTiers = {
       // 拒绝类靠前（quic）
       reject: ["gfs-quic"],
-      // 应用分流：YouTube → Spotify → Disney → …（模板无这些规则）
+      // 脚本专用应用分流优先于模板的宽泛规则
       specific: [
         "gfs-twitter",
         "gfs-openai",
         "gfs-youtube",
         "gfs-spotify",
-        "gfs-streaming",
         "gfs-amazon-oracle",
         "gfs-tiktok",
       ],
-      // BT 是分流到专用出站，不是拒绝
-      divert: ["gfs-bt"],
       private: ["gfs-private-ip", "gfs-private-site"],
-      notcn: ["gfs-not-cn"],
     };
 
     function managedRulesOf(tierIds) {
@@ -2077,11 +1886,9 @@ async function operator(input, targetPlatform, context) {
     const precise = [];
     const privateKept = [];
     const cnKept = [];
-    const notCnKept = [];
 
     for (const rule of existingRules) {
       if (!rule || typeof rule !== "object") continue;
-      if (isLocalOnlyRule(rule)) continue;
       if (rule.clash_mode) {
         clashModeKept.push(rule);
         continue;
@@ -2096,8 +1903,6 @@ async function operator(input, targetPlatform, context) {
       } else if (isCnBroadRouteRule(rule)) {
         // 模板 China-Site / China-IP：靠后，不抢精确规则
         cnKept.push(rule);
-      } else if (isNotCnBroadRouteRule(rule)) {
-        notCnKept.push(rule);
       } else if (isPrivateRouteRule(rule)) {
         privateKept.push(rule);
       } else {
@@ -2109,7 +1914,7 @@ async function operator(input, targetPlatform, context) {
     config.route.rules = [
       // 1. sniff / DNS 最前
       ...infra,
-      // 2. 模板 Clash mode 优先于普通分流，保证 Direct / Global 模式生效
+      // 2. 仅保留模板自带的模式规则
       ...clashModeKept,
       // 3. 拒绝类（模板 + quic）
       ...rejectKept,
@@ -2118,260 +1923,54 @@ async function operator(input, targetPlatform, context) {
       ...managedRulesOf(managedTiers.specific),
       // 5. 模板精确规则（域名/进程/应用）
       ...precise,
-      ...managedRulesOf(managedTiers.divert),
-      // 6. Private / CN / !CN 大盘靠后（CN 规则集由模板自带，不再重复注入）
+      // 6. Private / CN 大盘靠后（CN 规则集由模板自带，不再重复注入）
       ...privateKept,
       ...managedRulesOf(managedTiers.private),
       ...cnKept,
-      ...notCnKept,
-      ...managedRulesOf(managedTiers.notcn),
     ];
-
-    // 统一 1.14 rule_set 下载：http_client，移除已废弃的 download_detour
-    for (const item of config.route.rule_set) {
-      if (!item || typeof item !== "object") continue;
-      if (item.type !== "remote") continue;
-
-      delete item.download_detour;
-      item.http_client = buildRuleSetHttpClient(downloadDetour);
-    }
 
     if (!config.route.final) {
       config.route.final = MAIN_PROXY_TAG;
     }
   }
 
-  // mixed 代理入站改为 0.0.0.0（全接口），不再仅 127.0.0.1
-  function applyMixedInboundListenAll(inbound) {
-    if (!inbound || inbound.type !== "mixed") return;
-    inbound.listen = "0.0.0.0";
+  function normalizeIncomingNode(node) {
+    if (!node || typeof node !== "object") return;
+    if (!node.tag && node.name) node.tag = String(node.name);
+
+    const strategy = node.domain_strategy;
+    delete node.domain_strategy;
+    if (!strategy || strategy === "as_is" || node.detour) return;
+
+    const resolver = node.domain_resolver || config.route.default_domain_resolver;
+    if (!resolver) {
+      throw new Error(`订阅节点 ${node.tag || node.name || "未命名"} 缺少域名解析器，无法迁移 domain_strategy`);
+    }
+    const options = typeof resolver === "string" ? { server: resolver } : resolver;
+    node.domain_resolver = {
+      ...options,
+      strategy: (node.domain_resolver && options.strategy) || strategy,
+    };
   }
 
-  // 确保路由侧有 DNS 劫持（模板未写时作双保险；不改写 TUN 入站）
-  function ensureRouteDnsHijackRules(targetConfig) {
-    if (!targetConfig.route || typeof targetConfig.route !== "object") {
-      targetConfig.route = {};
+  // 输入必须是已迁移的完整 1.15 模板；只校验脚本直接依赖的配置。
+  function validateTemplate(template) {
+    if (!template || typeof template !== "object" || Array.isArray(template)) {
+      throw new Error("配置模板必须是 JSON 对象");
     }
-    if (!Array.isArray(targetConfig.route.rules)) {
-      targetConfig.route.rules = [];
-    }
-
-    const rules = targetConfig.route.rules;
-    const hasProtocolDnsHijack = rules.some((rule) =>
-      hijackCoversProtocolDns(rule),
-    );
-    const hasPort53Hijack = rules.some((rule) => hijackCoversPort53(rule));
-
-    // 插在规则列表靠前位置（在已有 sniff 之后尽量靠前）
-    let insertAt = 0;
-    for (let i = 0; i < rules.length; i += 1) {
-      if (rules[i] && rules[i].action === "sniff") insertAt = i + 1;
-    }
-
-    const toInsert = [];
-    if (!hasProtocolDnsHijack) {
-      toInsert.push({ protocol: "dns", action: "hijack-dns" });
-    }
-    if (!hasPort53Hijack) {
-      toInsert.push({ port: 53, action: "hijack-dns" });
-    }
-
-    if (toInsert.length) {
-      rules.splice(insertAt, 0, ...toInsert);
-    }
-
-    // 递归检查 hijack-dns 规则（含 logical 嵌套子规则），避免重复注入
-    function hijackCoversPort53(rule) {
-      if (!rule || typeof rule !== "object" || rule.action !== "hijack-dns") {
-        return false;
-      }
-      if (rule.port === 53) return true;
-      if (Array.isArray(rule.port) && rule.port.includes(53)) return true;
-      if (
-        Array.isArray(rule.inbound) &&
-        rule.inbound.some((name) => /dns/i.test(String(name)))
-      ) {
-        return true;
-      }
-      if (Array.isArray(rule.rules)) {
-        return rule.rules.some((sub) => hijackCoversPort53(sub));
-      }
-      return false;
-    }
-
-    function hijackCoversProtocolDns(rule) {
-      if (!rule || typeof rule !== "object" || rule.action !== "hijack-dns") {
-        return false;
-      }
-      if (
-        rule.protocol === "dns" ||
-        (Array.isArray(rule.protocol) && rule.protocol.includes("dns"))
-      ) {
-        return true;
-      }
-      if (Array.isArray(rule.rules)) {
-        return rule.rules.some((sub) => hijackCoversProtocolDns(sub));
-      }
-      return false;
-    }
-  }
-
-  // 关闭 Clash API，开启 sing-box 1.14 官方 API + Dashboard
-  // 文档：https://sing-box.sagernet.org/configuration/service/api/
-  function applySingBox114ApiDashboard(targetConfig) {
-    if (!targetConfig.experimental || typeof targetConfig.experimental !== "object") {
-      targetConfig.experimental = {};
-    }
-
-    // 彻底关掉旧 Clash API（含 external_controller / external_ui）
-    delete targetConfig.experimental.clash_api;
-
-    if (!Array.isArray(targetConfig.services)) {
-      targetConfig.services = [];
-    }
-
-    // 去掉非 api 以外的残留时不要误删其它 service；只保证有一条 type=api
-    let api = targetConfig.services.find(
-      (item) => item && item.type === "api",
-    );
-
-    if (!api) {
-      api = {
-        type: "api",
-        tag: "sing-box-api",
-        listen: "127.0.0.1",
-        listen_port: 9090,
-        secret: "",
-        access_control_allow_private_network: true,
-        // 面板资源下载 detour 稍后由 syncAllRemoteDownloadDetours 统一写入
-        dashboard: true,
-      };
-      targetConfig.services.push(api);
-    } else {
-      if (!api.tag) api.tag = "sing-box-api";
-      if (!api.listen) api.listen = "127.0.0.1";
-      if (api.listen_port == null || api.listen_port === "") {
-        api.listen_port = 9090;
-      }
-      if (api.access_control_allow_private_network == null) {
-        api.access_control_allow_private_network = true;
-      }
-
-      if (api.dashboard === false || api.dashboard == null) {
-        api.dashboard = true;
-      } else if (typeof api.dashboard === "object") {
-        api.dashboard.enabled = true;
-      }
-    }
-  }
-
-  // 1.15 使用 sing-tun 自研 TCP/IP 栈；删除 stack 才会启用新实现。
-  function applySingBox115TunStack(targetConfig) {
-    for (const inbound of Array.isArray(targetConfig.inbounds)
-      ? targetConfig.inbounds
-      : []) {
-      if (!inbound || typeof inbound !== "object" || inbound.type !== "tun") {
-        continue;
-      }
-
-      delete inbound.stack;
-    }
-  }
-
-  function applySingBox114Dns(targetConfig) {
-    if (!targetConfig.dns || typeof targetConfig.dns !== "object") {
-      throw new Error("配置模板缺少 dns 配置");
-    }
-
-    if (!Array.isArray(targetConfig.dns.servers)) {
+    if (!template.dns || !Array.isArray(template.dns.servers)) {
       throw new Error("配置模板缺少 dns.servers");
     }
-
-    if (!Array.isArray(targetConfig.dns.rules)) {
-      targetConfig.dns.rules = [];
+    if (!template.dns.servers.some(
+      (server) => server && server.tag === "DNS-DIRECT",
+    )) {
+      throw new Error("配置模板缺少直连解析器 DNS-DIRECT");
     }
-
-    const resolver = requireDnsServer("DNS-RESOLVER", "udp");
-    delete resolver.detour;
-
-    const nodeResolver = requireDnsServer("DNS-NODE-RESOLVER", "https");
-    nodeResolver.domain_resolver = "DNS-RESOLVER";
-    delete nodeResolver.detour;
-
-    const directResolver = requireDnsServer("DNS-DIRECT", "https");
-    directResolver.domain_resolver = "DNS-RESOLVER";
-    delete directResolver.detour;
-
-    const proxyResolver = requireDnsServer("DNS-PROXY", "https");
-    proxyResolver.detour = MAIN_PROXY_TAG;
-    delete proxyResolver.domain_resolver;
-
-    const googleResolver = requireDnsServer("DNS-GOOGLE", "https");
-    googleResolver.detour = "🔍Google";
-    delete googleResolver.domain_resolver;
-
-    // Fake-IP（DNS-FAKEIP 段、规则、dns.strategy）完全由配置模板决定，脚本不改写
-
-    // 1.14：DNS cache 按 transport 分键，independent_cache 已废弃
-    delete targetConfig.dns.independent_cache;
-
-    if (!targetConfig.route || typeof targetConfig.route !== "object") {
-      targetConfig.route = {};
-    }
-
-    targetConfig.route.default_domain_resolver = {
-      server: "DNS-DIRECT",
-    };
-
-    for (const inbound of Array.isArray(targetConfig.inbounds)
-      ? targetConfig.inbounds
-      : []) {
-      if (!inbound || typeof inbound !== "object") continue;
-
-      // mixed 入站：监听全部地址，供局域网设备使用
-      if (inbound.type === "mixed") {
-        applyMixedInboundListenAll(inbound);
-      }
-    }
-
-    ensureRouteDnsHijackRules(targetConfig);
-
-    for (const outbound of targetConfig.outbounds) {
-      if (!outbound || typeof outbound !== "object") continue;
-
-      delete outbound.domain_strategy;
-
-      if (outbound.type === "direct" && outbound.tag === "Direct") {
-        outbound.domain_resolver = "DNS-DIRECT";
-      }
-    }
-
-    for (const endpoint of targetConfig.endpoints) {
-      if (!endpoint || typeof endpoint !== "object") continue;
-      delete endpoint.domain_strategy;
-    }
-
-    function requireDnsServer(tag, type) {
-      const server = targetConfig.dns.servers.find(
-        (item) => item && item.tag === tag,
-      );
-
-      if (!server) {
-        throw new Error(`配置模板缺少 DNS 服务器：${tag}`);
-      }
-
-      if (server.type !== type) {
-        throw new Error(
-          `DNS 服务器 ${tag} 类型应为 ${type}，实际为 ${server.type || "未设置"}`,
-        );
-      }
-
-      delete server.address;
-      delete server.address_resolver;
-      delete server.address_strategy;
-      delete server.domain_strategy;
-
-      return server;
+    if (
+      !Array.isArray(template.services) ||
+      !template.services.some((service) => service && service.type === "api")
+    ) {
+      throw new Error("配置模板缺少原生 API 服务，请在 services 中配置 type=api");
     }
   }
 
@@ -2697,7 +2296,7 @@ function matchPolicyGroupTag(existingTags, preferred, aliases) {
   return found || preferred;
 }
 
-// YouTube / Disney 能落到模板已有组时，不再保留「国外流媒体」
+// YouTube 能落到模板已有组时，不再保留「国外流媒体」
 function resolveStreamingTargets(existingTags, googleTag) {
   const tags = Array.isArray(existingTags) ? existingTags.filter(Boolean) : [];
   const youtubeDedicated = findPolicyTagByNames(tags, [
@@ -2706,23 +2305,19 @@ function resolveStreamingTargets(existingTags, googleTag) {
     "YouTube",
     "Youtube",
   ]);
-  const disneyDedicated = findPolicyTagByNames(tags, ["disney", "Disney"]);
   const existingStreamingTag = findPolicyTagByNames(tags, [
     "国外流媒体",
     "Streaming",
     "📺Streaming",
   ]);
 
-  const youtubeNeedsStreaming = !youtubeDedicated && !googleTag;
-  const disneyNeedsStreaming = !disneyDedicated;
-  const needsStreamingGroup = youtubeNeedsStreaming || disneyNeedsStreaming;
+  const needsStreamingGroup = !youtubeDedicated && !googleTag;
   const streamingTag = needsStreamingGroup
     ? existingStreamingTag || "国外流媒体"
     : "";
 
   return {
     youtube: youtubeDedicated || googleTag || streamingTag,
-    disney: disneyDedicated || streamingTag,
     needsStreamingGroup,
     streamingTag,
     existingStreamingTag,
