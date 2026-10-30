@@ -83,7 +83,7 @@ https://raw.githubusercontent.com/SenreySong/substore-scripts/main/sing-box/subs
 - 美国子组展示名：优化 / **落地** / 家宽（兼容旧名「直连」）。
 - 不再新增 `Direct` / `Global` 路由或 DNS 模式规则；模板自带的模式规则及其 `GLOBAL` / `Global` 策略组保留。
 - **缓存配置**（`experimental.cache_file`）完全按模板，脚本不改写。
-- **IPv6**：模板启用双栈 Fake-IP（`198.18.0.0/15` + `fc00::/18`），DNS 使用 `prefer_ipv4`，优先 IPv4 但保留 AAAA / IPv6；TUN 同时配置 IPv4 和 IPv6 地址。
+- **IPv6**：完全沿用模板，脚本不改写 DNS 解析策略、Fake-IP 地址范围、TUN 地址或 IPv6 路由排除项。
 - `GeoSite-Private` 使用远程规则集，匹配路由器、本地域名、特殊用途域名和私网反向解析域名并直连；不再注入 `GeoLocation-!CN`，避免把本来就由 `route.final` 走主代理的流量重复提前分流。
 - 移除旧 `experimental.clash_api`，在模板现有的原生 API 服务上启用 dashboard；监听地址、端口、认证和访问控制完全沿用模板。
 - 规则集与面板下载统一使用 Auto Select，无合适节点时使用 Direct；只覆盖 HTTP 客户端的下载出站，保留其已有协议、TLS、请求头等字段。引用共享客户端时使用内联副本，不修改共享配置。

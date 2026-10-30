@@ -67,7 +67,6 @@ async function operator(input, targetPlatform, context) {
 
   const config = parser.parse(input.$content);
   validateTemplate(config);
-  ensureIpv6Support(config);
 
   if (!Array.isArray(config.outbounds)) {
     config.outbounds = [];
@@ -1952,45 +1951,6 @@ async function operator(input, targetPlatform, context) {
       ...options,
       strategy: (node.domain_resolver && options.strategy) || strategy,
     };
-  }
-
-  // 模板可能仍是 IPv4-only；脚本统一补齐双栈，并让 DNS 优先返回 IPv4。
-  function ensureIpv6Support(targetConfig) {
-    if (!targetConfig.dns || !Array.isArray(targetConfig.dns.servers)) return;
-
-    targetConfig.dns.strategy = "prefer_ipv4";
-
-    const fakeIp = targetConfig.dns.servers.find(
-      (server) => server && server.type === "fakeip",
-    );
-    if (fakeIp && !fakeIp.inet6_range) {
-      fakeIp.inet6_range = "fc00::/18";
-    }
-
-    if (!Array.isArray(targetConfig.inbounds)) return;
-
-    const tun = targetConfig.inbounds.find(
-      (inbound) => inbound && inbound.type === "tun",
-    );
-    if (!tun) return;
-
-    if (!Array.isArray(tun.address)) tun.address = [];
-    if (!tun.address.some((address) => String(address).includes(":"))) {
-      tun.address.push("fdfe:dcba:9876::1/126");
-    }
-
-    if (Array.isArray(tun.dns_address)) {
-      if (!tun.dns_address.some((address) => String(address).includes(":"))) {
-        tun.dns_address.push("fdfe:dcba:9876::2");
-      }
-    }
-
-    if (Array.isArray(tun.route_exclude_address)) {
-      const exclusions = new Set(tun.route_exclude_address.map(String));
-      for (const address of ["fc00::/7", "fe80::/10"]) {
-        if (!exclusions.has(address)) tun.route_exclude_address.push(address);
-      }
-    }
   }
 
   // 输入必须是已迁移的完整 1.15 模板；只校验脚本直接依赖的配置。
