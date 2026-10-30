@@ -33,12 +33,11 @@ https://cdn.jsdelivr.net/gh/SenreySong/substore-scripts@main/sing-box/substore.j
 
 1. **文件**：远程/本地内容为 sing-box 完整 JSON 模板（本机可参考 `examples/config-1.15.0.json`，该目录不上传）。
 2. **脚本操作**：模式选 **链接 (link)**，URL 必须带 hash 参数（见下）。
-3. **参数**（只需要一个）：
+3. **参数**：
 
 | key | value 示例 | 说明 |
 |-----|------------|------|
 | `collectionName` | `VPS-ALL` | Sub-Store 里订阅集合的名称（必填） |
-| `interruptExistConnections` | `1` / `0` | 切换节点/策略组时是否打断既有连接；默认 `1`（开启） |
 
 ### 参数怎么传（必读）
 
@@ -64,31 +63,31 @@ https://raw.githubusercontent.com/SenreySong/substore-scripts/main/sing-box/subs
 
 若坚持用「参数」表，必须把脚本模式改成**非 link**（把脚本正文贴进内容框 / script 模式），此时 `arguments` 表才会生效。
 
-其它行为写死在脚本内；仅 `collectionName` 必填，`interruptExistConnections` 可选。
+其它行为写死在脚本内；仅 `collectionName` 必填。
 
 ## 脚本行为摘要
 
 - 从集合 `collectionName` 拉取节点并写入模板；保留地区归组、节点排序和策略组成员整理。
-- 模板需自行提供 `DNS-DIRECT` 和原生 `services` API 服务；脚本不再硬编码五种 DNS 服务器类型，也不创建缺失的 API 服务。
+- 不再强制要求模板提供 `DNS-DIRECT` 或原生 API 服务；仅在迁移订阅节点旧解析字段时检查所需解析器。
 - 只处理订阅节点遗留的 `domain_strategy`：迁移至 `domain_resolver.strategy`，优先保留节点已有解析策略。
-- **`♾️Auto Select`**：仅挂 **新加坡 + 美国优化** 节点的 urltest（非全节点，降低 Windows TUN 风险）；专供 **rule_set / dashboard 下载**。
+- **`♾️Auto Select`**：仅挂 **新加坡 + 美国优化** 节点的 urltest（非全节点，降低 Windows TUN 风险）；不再自动修改规则集或 Dashboard 的下载出口。
 - **Main Proxy** 成员：地区组 + Direct（不挂 Auto Select）；**default = 成员列表第一项**。
 - 地区组默认类型：`selector`。
 - 英国、德国等欧洲国家统一进入 **`🇪🇺 欧洲策略组`**；香港及其他未单列地区进入 `🌐 Other`。
 - 节点名任意位置包含 **`赠`** 的节点优先进入 **`🎁 赠送策略组`**，不再按原国家或地区归组。
-- 默认开启 `interrupt_exist_connections`：切换节点/策略组时打断既有连接（可用参数关闭）。
 - Disney 规则集与分流由模板提供，脚本不额外注入，也不因 Disney 创建流媒体兜底组。
 - 不再生成 `Bittorrent` 专用规则或出站，下载工具按其余分流规则处理。
-- 脚本新增的 QUIC 拦截使用 `action: reject` + `method: drop`；模板广告拦截保持原有规则。
+- QUIC 拒绝规则完全由模板管理，脚本不再新增或改写。
 - 美国子组展示名：优化 / **落地** / 家宽（兼容旧名「直连」）。
 - 不再新增 `Direct` / `Global` 路由或 DNS 模式规则；模板自带的模式规则及其 `GLOBAL` / `Global` 策略组保留。
 - **缓存配置**（`experimental.cache_file`）完全按模板，脚本不改写。
 - **IPv6**：完全沿用模板，脚本不改写 DNS 解析策略、Fake-IP 地址范围、TUN 地址或 IPv6 路由排除项。
-- `GeoSite-Private` 使用远程规则集，匹配路由器、本地域名、特殊用途域名和私网反向解析域名并直连；不再注入 `GeoLocation-!CN`，避免把本来就由 `route.final` 走主代理的流量重复提前分流。
-- 移除旧 `experimental.clash_api`，在模板现有的原生 API 服务上启用 dashboard；监听地址、端口、认证和访问控制完全沿用模板。
-- 规则集与面板下载统一使用 Auto Select，无合适节点时使用 Direct；只覆盖 HTTP 客户端的下载出站，保留其已有协议、TLS、请求头等字段。引用共享客户端时使用内联副本，不修改共享配置。
+- 私有 IP / 私有域名规则完全由模板管理，脚本不再注入或改写。
+- 原生 API、Dashboard、认证和访问控制完全沿用模板。
 - **TUN / mixed 入站、DNS 解析链和默认解析器**完全按 1.15 模板，不再删除 `stack`、改写监听地址或重复注入 DNS 劫持规则；旧字段应在模板中完成迁移。
-- 不再自动创建 `Block` 出站，拒绝流量使用模板或脚本中的 `action: reject`。
+- 不再自动创建或归一化 `Direct` / `Block` 出站，保留模板现有定义。
+- 不补写 `route.final`，不再对模板规则分类或排序；保留模板开头连续的 DNS / 基础控制规则，脚本应用分流插入其后，模板其他规则保持原有顺序。
+- 不再写入 `interrupt_exist_connections`，原有值沿用模板；旧的 `interruptExistConnections` 参数不再生效。
 - 合并前清理空模板组，合并后统一清洗一次策略组成员和默认值；识别有效 outbounds 与 endpoints，不再按规则集名称含 `local` 就删除模板路由。
 
 ## 本地开发

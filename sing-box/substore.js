@@ -1,5 +1,5 @@
 async function operator(input, targetPlatform, context) {
-  // collectionName 必填，切换连接行为可通过 interruptExistConnections 覆盖
+  // collectionName 必填
   // Sub-Store 远程脚本传参格式（注意：多个参数用 &，不要写多个 #）：
   //   https://example.com/script.js#collectionName=VPS-ALL&noCache
   // 非 link 模式才使用前端参数表
@@ -17,17 +17,9 @@ async function operator(input, targetPlatform, context) {
     args.name ||
     "";
   const MAIN_PROXY_TAG = "🌏️Main Proxy";
-  // 仅新加坡 + 美国优化节点的 urltest；规则集 / 面板下载走它（非全节点，降低 Windows TUN 风险）
+  // 仅新加坡 + 美国优化节点参与测速，不改写规则集或面板下载配置。
   const AUTO_SELECT_TAG = "♾️Auto Select";
   const TEST_URL = "https://cp.cloudflare.com";
-  // 切换节点 / 策略组时打断既有连接（sing-box: interrupt_exist_connections）
-  // 可被 URL 参数覆盖：interruptExistConnections=0/1 或 true/false
-  const INTERRUPT_EXIST_CONNECTIONS = parseBoolish(
-    args.interruptExistConnections ??
-      args.interrupt_exist_connections ??
-      args.interrupt,
-    true,
-  );
   // 逻辑名 → 实际 outbound tag（优先复用模板已有组）
   const appTagMap = {
     mainProxy: MAIN_PROXY_TAG,
@@ -95,22 +87,16 @@ async function operator(input, targetPlatform, context) {
     }
   }
 
-  // 统一模板里 Direct/direct/DIRECT 等内置直连出站，避免策略组出现两个大小写不同的 direct
-  normalizeDirectOutbounds(config);
-
   // 尽早删掉空的 Auto Select，避免后续任何阶段带着 empty urltest
   // （样例里 Auto Select.outbounds=[] 会直接触发 missing tags）
   stripBrokenPolicyGroups(config);
-
-  // 旧 Clash API 与原生 API 不共用面板；原生服务及认证字段沿用模板。
-  if (config.experimental) delete config.experimental.clash_api;
 
   const originalGroups = config.outbounds.filter(isPolicyGroup);
   const originalGroupTags = new Set(
     originalGroups.map((item) => item && item.tag).filter(Boolean),
   );
 
-  // 直连只保留 canonical 名 Direct；direct/DIRECT 在 shouldPreserve / canonicalize 里归一
+  // 保留模板中的内置出站和常见策略组成员，不重命名直连出站。
   const preserveSet = new Set([
     "Direct",
     "Proxy",
@@ -244,9 +230,7 @@ async function operator(input, targetPlatform, context) {
   pruneStaleRegionShells(generatedGroupTagSet);
   const regionGroupTagsOrdered = orderRegionGroupTags(generatedGroupTags);
 
-  ensureDirectOutbound();
-
-  // Auto Select：只挂新加坡 + 美国优化，供 rule_set / dashboard 下载
+  // Auto Select：只挂新加坡 + 美国优化，下载用途由模板决定。
   const autoSelectGroup = ensureAutoSelectGroup();
 
   const managedAppGroupTags = ensureGfsAppGroups(
@@ -323,14 +307,10 @@ async function operator(input, targetPlatform, context) {
 
   applyGfsRouteAndRulesets();
 
-  // 所有组装和引用替换结束后，仅清洗一次，再排序和配置下载路径。
+  // 所有组装和引用替换结束后，清理策略组成员并排序。
   removeUnusedAllNodesGroup();
   sanitizePolicyGroupMembers();
   reorderOutboundsPutRegionsFirst(regionGroupTagsOrdered);
-  const downloadDetour = autoSelectGroup ? AUTO_SELECT_TAG : "Direct";
-  syncAllRemoteDownloadDetours(downloadDetour);
-  applyInterruptExistConnections(INTERRUPT_EXIST_CONNECTIONS);
-
   input.$content = JSON.stringify(config, null, 2);
   return input;
 
@@ -666,7 +646,7 @@ async function operator(input, targetPlatform, context) {
   function shouldPreserveGroupMember(tag, generatedSet) {
     if (!tag || typeof tag !== "string") return false;
 
-    // direct/DIRECT 一律按 Direct 处理
+    // 保留模板使用的直连别名。
     if (isDirectAliasTag(tag)) return preserveSet.has("Direct");
 
     if (preserveSet.has(tag)) return true;
@@ -731,7 +711,6 @@ async function operator(input, targetPlatform, context) {
 
       group.type = "selector";
       group.outbounds = safeNodes;
-      group.interrupt_exist_connections = INTERRUPT_EXIST_CONNECTIONS;
       delete group.url;
       syncSelectorDefault(group);
       return group;
@@ -741,7 +720,6 @@ async function operator(input, targetPlatform, context) {
       type: "selector",
       tag: nextTag,
       outbounds: safeNodes,
-      interrupt_exist_connections: INTERRUPT_EXIST_CONNECTIONS,
     };
 
     syncSelectorDefault(group);
@@ -887,17 +865,6 @@ async function operator(input, targetPlatform, context) {
     return config.outbounds.find((item) => item && item.tag === tag);
   }
 
-  function ensureDirectOutbound() {
-    if (findOutboundByTag("Direct")) return;
-
-    config.outbounds.push({
-      type: "direct",
-      tag: "Direct",
-      domain_resolver: "DNS-DIRECT",
-    });
-    existingTags.add("Direct");
-  }
-
   function isLeafProxyOutbound(outbound) {
     if (!outbound || !outbound.tag || typeof outbound !== "object") return false;
     if (isPolicyGroup(outbound)) return false;
@@ -956,7 +923,7 @@ async function operator(input, targetPlatform, context) {
     return uniqueList(result);
   }
 
-  // 维护 ♾️Auto Select（urltest）：只挂 SG + 美国优化，专供规则/面板下载
+  // 维护 ♾️Auto Select（urltest）：只挂 SG + 美国优化。
   function ensureAutoSelectGroup() {
     const members = collectAutoSelectNodeTags();
     if (!members.length) {
@@ -978,7 +945,6 @@ async function operator(input, targetPlatform, context) {
         url: TEST_URL,
         interval: "3m",
         tolerance: 150,
-        interrupt_exist_connections: INTERRUPT_EXIST_CONNECTIONS,
       };
       config.outbounds.push(group);
       existingTags.add(AUTO_SELECT_TAG);
@@ -989,42 +955,10 @@ async function operator(input, targetPlatform, context) {
       group.url = TEST_URL;
       if (!group.interval) group.interval = "3m";
       if (group.tolerance == null) group.tolerance = 150;
-      group.interrupt_exist_connections = INTERRUPT_EXIST_CONNECTIONS;
       delete group.default;
     }
 
     return group;
-  }
-
-  // 在 Auto Select 最终确定后，统一写入规则集和面板的下载配置
-  function syncAllRemoteDownloadDetours(detour) {
-    const d = detour || "Direct";
-    for (const item of Array.isArray(config.route.rule_set)
-      ? config.route.rule_set
-      : []) {
-      if (!item || item.type !== "remote") continue;
-      delete item.download_detour;
-      item.http_client = buildDownloadHttpClient(item.http_client, d);
-    }
-    applyDownloadDetourToDashboard(d);
-  }
-
-  function applyDownloadDetourToDashboard(detour) {
-    for (const service of config.services) {
-      if (!service || service.type !== "api") continue;
-
-      const dashboard = service.dashboard;
-      const options = typeof dashboard === "string"
-        ? { path: dashboard }
-        : dashboard && typeof dashboard === "object"
-          ? dashboard
-          : {};
-      service.dashboard = {
-        ...options,
-        enabled: true,
-        http_client: buildDownloadHttpClient(options.http_client, detour),
-      };
-    }
   }
 
   // 去掉无用的「全部节点」组，引用改写到 Main Proxy
@@ -1145,19 +1079,13 @@ async function operator(input, targetPlatform, context) {
     config.outbounds = [...regionGroups, ...otherGroups, ...leaves];
   }
 
-  function ensureSelectorGroup(tag, members, options = {}) {
+  function ensureSelectorGroup(tag, members) {
     let group = findOutboundByTag(tag);
-    const interrupt =
-      options.interrupt_exist_connections == null
-        ? INTERRUPT_EXIST_CONNECTIONS
-        : !!options.interrupt_exist_connections;
-
     if (!group) {
       group = {
         type: "selector",
         tag,
         outbounds: [],
-        interrupt_exist_connections: interrupt,
       };
       config.outbounds.push(group);
       existingTags.add(tag);
@@ -1166,7 +1094,6 @@ async function operator(input, targetPlatform, context) {
       return null;
     } else {
       group.type = "selector";
-      group.interrupt_exist_connections = interrupt;
     }
 
     // 只写入当前已存在的 tag，杜绝 missing tags
@@ -1187,114 +1114,22 @@ async function operator(input, targetPlatform, context) {
     return group;
   }
 
-  // 内置直连 tag 统一为 Direct（忽略大小写）
+  // 识别常见直连别名，但不改动模板出站。
   function isDirectAliasTag(tag) {
     return typeof tag === "string" && /^direct$/i.test(tag.trim());
   }
 
   function canonicalizeMemberTag(tag) {
     if (typeof tag !== "string") return tag;
-    if (isDirectAliasTag(tag)) return "Direct";
+    if (isDirectAliasTag(tag) && !findOutboundByTag(tag)) {
+      const direct = config.outbounds.find(
+        (outbound) => outbound && outbound.type === "direct",
+      );
+      return direct ? direct.tag : tag;
+    }
     return tag;
   }
 
-  // 只保留一个 type=direct 且 tag 为 Direct 的内置直连；
-  // 其余 direct/DIRECT 等别名 outbound 删除，所有引用改写为 Direct。
-  function normalizeDirectOutbounds(targetConfig) {
-    if (!targetConfig || !Array.isArray(targetConfig.outbounds)) return;
-
-    const DIRECT_TAG = "Direct";
-    let keep = null;
-    const toRemove = new Set();
-
-    for (const outbound of targetConfig.outbounds) {
-      if (!outbound || typeof outbound !== "object") continue;
-      // 只合并「内置直连」本体，其它自定义直连出站不动
-      if (String(outbound.type || "") !== "direct") continue;
-      if (!isDirectAliasTag(outbound.tag)) continue;
-
-      if (!keep) {
-        keep = outbound;
-        keep.tag = DIRECT_TAG;
-      } else {
-        toRemove.add(outbound);
-      }
-    }
-
-    if (keep) {
-      targetConfig.outbounds = targetConfig.outbounds.filter(
-        (item) => !toRemove.has(item),
-      );
-    }
-
-    const rewriteTag = (value) =>
-      isDirectAliasTag(value) ? DIRECT_TAG : value;
-
-    for (const outbound of targetConfig.outbounds) {
-      if (!outbound || typeof outbound !== "object") continue;
-
-      if (Array.isArray(outbound.outbounds)) {
-        outbound.outbounds = uniqueList(
-          outbound.outbounds.map(rewriteTag).filter(Boolean),
-        );
-      }
-      if (typeof outbound.default === "string") {
-        outbound.default = rewriteTag(outbound.default);
-        if (
-          Array.isArray(outbound.outbounds) &&
-          outbound.default &&
-          !outbound.outbounds.includes(outbound.default)
-        ) {
-          syncSelectorDefault(outbound);
-        }
-      }
-    }
-
-    for (const rule of (targetConfig.route && targetConfig.route.rules) || []) {
-      if (rule && typeof rule.outbound === "string") {
-        rule.outbound = rewriteTag(rule.outbound);
-      }
-    }
-
-    for (const server of (targetConfig.dns && targetConfig.dns.servers) || []) {
-      if (server && typeof server.detour === "string") {
-        server.detour = rewriteTag(server.detour);
-      }
-    }
-
-    for (const item of (targetConfig.route && targetConfig.route.rule_set) ||
-      []) {
-      if (
-        item &&
-        item.http_client &&
-        typeof item.http_client.detour === "string"
-      ) {
-        item.http_client.detour = rewriteTag(item.http_client.detour);
-      }
-    }
-
-    for (const service of Array.isArray(targetConfig.services)
-      ? targetConfig.services
-      : []) {
-      if (
-        service &&
-        service.dashboard &&
-        typeof service.dashboard === "object" &&
-        service.dashboard.http_client &&
-        typeof service.dashboard.http_client.detour === "string"
-      ) {
-        service.dashboard.http_client.detour = rewriteTag(
-          service.dashboard.http_client.detour,
-        );
-      }
-    }
-
-    if (targetConfig.route && typeof targetConfig.route.final === "string") {
-      targetConfig.route.final = rewriteTag(targetConfig.route.final);
-    }
-  }
-
-  // 删除空策略组 / 悬空引用；非空 Auto Select 保留
   function stripBrokenPolicyGroups(targetConfig) {
     if (!targetConfig || !Array.isArray(targetConfig.outbounds)) return;
 
@@ -1305,7 +1140,7 @@ async function operator(input, targetPlatform, context) {
     ]);
     const removedTags = new Set();
 
-    // 业务组里不要挂 Auto（Auto 仅下载用）；Auto 自身成员保留
+    // 业务组不挂 Auto；Auto 自身成员保留。
     for (const outbound of targetConfig.outbounds) {
       if (!outbound || !Array.isArray(outbound.outbounds)) continue;
       if (outbound.tag === AUTO) continue;
@@ -1372,7 +1207,7 @@ async function operator(input, targetPlatform, context) {
       }
     }
     rewriteRemovedGroupRules(targetConfig.route.rules);
-    for (const server of targetConfig.dns.servers) {
+    for (const server of (targetConfig.dns && targetConfig.dns.servers) || []) {
       if (server && removedTags.has(server.detour)) server.detour = fallback;
     }
   }
@@ -1390,19 +1225,11 @@ async function operator(input, targetPlatform, context) {
     appTagMap[key] = tag;
 
     const group = ensureSelectorGroup(tag, members, {
-      interrupt_exist_connections: INTERRUPT_EXIST_CONNECTIONS,
     });
 
     return group;
   }
 
-  function applyInterruptExistConnections(enabled) {
-    const value = !!enabled;
-    for (const outbound of config.outbounds || []) {
-      if (!outbound || !isPolicyGroup(outbound)) continue;
-      outbound.interrupt_exist_connections = value;
-    }
-  }
 
   function ensureGfsAppGroups(regionTags, nodeTags) {
     const tags = new Set();
@@ -1597,14 +1424,6 @@ async function operator(input, targetPlatform, context) {
     // 模板已自带 AD/AI/Apple/Google/Microsoft/Telegram/Netflix/Bahamut 等 -Site 规则集，
     // 脚本只注入模板没有的规则集（CN/广告等大类不再重复注入）
     return [
-      {
-        tag: "GeoIP-Private",
-        url: `${geo}/geoip/private.srs`,
-      },
-      {
-        tag: "GeoSite-Private",
-        url: `${geo}/geosite/private.srs`,
-      },
       { tag: "openai", url: `${geo}/geosite/openai.srs` },
       { tag: "youtube", url: `${geo}/geosite/youtube.srs` },
       { tag: "spotify", url: `${geo}/geosite/spotify.srs` },
@@ -1636,28 +1455,6 @@ async function operator(input, targetPlatform, context) {
     delete item.path;
     delete item.rules;
     return item;
-  }
-
-  // 下载策略只覆盖 detour，保留模板显式指定的 HTTP、TLS 和请求头配置。
-  function buildDownloadHttpClient(client, detour) {
-    let options = client;
-    if (typeof client === "string" && client) {
-      options = (config.http_clients || []).find(
-        (item) => item && item.tag === client,
-      );
-      if (!options) {
-        throw new Error(`配置模板引用了不存在的 HTTP 客户端：${client}`);
-      }
-    }
-    const result = {
-      ...(options && typeof options === "object"
-        ? options
-        : { engine: "go", version: 2 }),
-      detour: detour || "Direct",
-    };
-    // 引用共享客户端时创建内联副本，不改变其它组件使用的共享对象。
-    delete result.tag;
-    return result;
   }
 
   function ruleSetList(rule) {
@@ -1697,21 +1494,6 @@ async function operator(input, targetPlatform, context) {
           action: "route",
           rule_set: ["twitter", "twitter-ip", "grok"],
           outbound: t.twitter,
-        },
-      },
-      {
-        id: "gfs-quic",
-        test: (rule) =>
-          rule &&
-          rule.protocol === "quic" &&
-          (rule.outbound === "Block" ||
-            rule.action === "reject" ||
-            rule.outbound === "block"),
-        // UDP 拒绝通过规则动作处理，不创建特殊出站。
-        rule: {
-          action: "reject",
-          protocol: "quic",
-          method: "drop",
         },
       },
       {
@@ -1775,69 +1557,21 @@ async function operator(input, targetPlatform, context) {
           outbound: t.tiktok,
         },
       },
-      {
-        id: "gfs-private-ip",
-        test: (rule) => hasAnyRuleSet(rule, ["GeoIP-Private"]),
-        rule: {
-          action: "route",
-          rule_set: ["GeoIP-Private"],
-          outbound: "Direct",
-        },
-      },
-      {
-        id: "gfs-private-site",
-        test: (rule) => hasAnyRuleSet(rule, ["GeoSite-Private"]),
-        rule: {
-          action: "route",
-          rule_set: ["GeoSite-Private"],
-          outbound: "Direct",
-        },
-      },
     ];
   }
 
-  function isInfraRouteRule(rule) {
+  function isLeadingTemplateControlRule(rule) {
     if (!rule || typeof rule !== "object") return false;
 
-    // sniff / DNS 必须最前
-    if (rule.action === "sniff" || rule.action === "hijack-dns") return true;
+    if (rule.action === "hijack-dns" || rule.action === "sniff") return true;
     if (rule.protocol === "dns") return true;
-
-    if (
-      Array.isArray(rule.inbound) &&
-      rule.inbound.some((name) => /dns/i.test(String(name)))
-    ) {
-      return true;
-    }
-
-    if (rule.port === 53) return true;
-    if (Array.isArray(rule.port) && rule.port.length === 1 && rule.port[0] === 53) {
-      return true;
-    }
-
-    return false;
-  }
-
-  // 模板已使用规则动作；拒绝规则直接按 action 分类。
-  function isRejectRouteRule(rule) {
-    return rule && rule.action === "reject";
-  }
-
-  function isCnBroadRouteRule(rule) {
-    return hasAnyRuleSet(rule, [
-      "China-Site",
-      "China-IP",
-      "GeoSite-CN",
-      "GeoIP-CN",
-      "cn-geosite.json",
-      "cn-geoip.json",
-    ]);
-  }
-
-  function isPrivateRouteRule(rule) {
-    if (!rule || typeof rule !== "object") return false;
     if (rule.ip_is_private === true) return true;
-    return hasAnyRuleSet(rule, ["GeoIP-Private", "GeoSite-Private"]);
+    if (rule.action === "reject") return true;
+
+    const ports = Array.isArray(rule.port) ? rule.port : [rule.port];
+    return ports.some((port) =>
+      [25, 587, 465, 143, 993, 110, 995, 53].includes(port),
+    );
   }
 
   function applyGfsRouteAndRulesets() {
@@ -1846,92 +1580,23 @@ async function operator(input, targetPlatform, context) {
     }
 
     const managed = getManagedGfsRules();
-    const managedById = new Map(managed.map((item) => [item.id, item]));
+    // 只替换脚本管理的应用分流，模板其它规则保持原有相对顺序。
+    const templateRules = config.route.rules.filter(
+      (rule) => !managed.some((item) => item.test(rule)),
+    );
+    const injectedRules = managed.map((item) => ({ ...item.rule }));
 
-    // 顺序：sniff/dns → 模板模式 → 拒绝 → 分流（精确→应用）→ private → CN
-    // 不生成模式规则；模板自带的模式规则保持高优先级。
-    // 模板已自带 AD/AI/Apple/Google/Microsoft/Telegram/CN 等规则，脚本只补充独有规则
-    const managedTiers = {
-      // 拒绝类靠前（quic）
-      reject: ["gfs-quic"],
-      // 脚本专用应用分流优先于模板的宽泛规则
-      specific: [
-        "gfs-twitter",
-        "gfs-openai",
-        "gfs-youtube",
-        "gfs-spotify",
-        "gfs-amazon-oracle",
-        "gfs-tiktok",
-      ],
-      private: ["gfs-private-ip", "gfs-private-site"],
-    };
-
-    function managedRulesOf(tierIds) {
-      const result = [];
-      for (const id of tierIds) {
-        const item = managedById.get(id);
-        if (!item) continue;
-        result.push({ ...item.rule });
-      }
-      return result;
+    // 保留模板开头连续的 DNS / 基础控制规则，应用分流插入其后。
+    let insertAt = 0;
+    while (
+      insertAt < templateRules.length &&
+      isLeadingTemplateControlRule(templateRules[insertAt])
+    ) {
+      insertAt += 1;
     }
 
-    const existingRules = Array.isArray(config.route.rules)
-      ? config.route.rules
-      : [];
-
-    const infra = [];
-    const clashModeKept = [];
-    const rejectKept = [];
-    const precise = [];
-    const privateKept = [];
-    const cnKept = [];
-
-    for (const rule of existingRules) {
-      if (!rule || typeof rule !== "object") continue;
-      if (rule.clash_mode) {
-        clashModeKept.push(rule);
-        continue;
-      }
-      if (managed.some((item) => item.test(rule))) continue;
-
-      if (isInfraRouteRule(rule)) {
-        infra.push(rule);
-      } else if (isRejectRouteRule(rule)) {
-        // 模板拒绝规则（AD-Site reject、逻辑 reject 等）
-        rejectKept.push(rule);
-      } else if (isCnBroadRouteRule(rule)) {
-        // 模板 China-Site / China-IP：靠后，不抢精确规则
-        cnKept.push(rule);
-      } else if (isPrivateRouteRule(rule)) {
-        privateKept.push(rule);
-      } else {
-        // 域名 / 进程 / 独立 rule_set 等分流规则
-        precise.push(rule);
-      }
-    }
-
-    config.route.rules = [
-      // 1. sniff / DNS 最前
-      ...infra,
-      // 2. 仅保留模板自带的模式规则
-      ...clashModeKept,
-      // 3. 拒绝类（模板 + quic）
-      ...rejectKept,
-      ...managedRulesOf(managedTiers.reject),
-      // 4. 脚本精确规则优先于模板宽泛规则（如 YouTube 须在 Google 之前）
-      ...managedRulesOf(managedTiers.specific),
-      // 5. 模板精确规则（域名/进程/应用）
-      ...precise,
-      // 6. Private / CN 大盘靠后（CN 规则集由模板自带，不再重复注入）
-      ...privateKept,
-      ...managedRulesOf(managedTiers.private),
-      ...cnKept,
-    ];
-
-    if (!config.route.final) {
-      config.route.final = MAIN_PROXY_TAG;
-    }
+    templateRules.splice(insertAt, 0, ...injectedRules);
+    config.route.rules = templateRules;
   }
 
   function normalizeIncomingNode(node) {
@@ -1957,20 +1622,6 @@ async function operator(input, targetPlatform, context) {
   function validateTemplate(template) {
     if (!template || typeof template !== "object" || Array.isArray(template)) {
       throw new Error("配置模板必须是 JSON 对象");
-    }
-    if (!template.dns || !Array.isArray(template.dns.servers)) {
-      throw new Error("配置模板缺少 dns.servers");
-    }
-    if (!template.dns.servers.some(
-      (server) => server && server.tag === "DNS-DIRECT",
-    )) {
-      throw new Error("配置模板缺少直连解析器 DNS-DIRECT");
-    }
-    if (
-      !Array.isArray(template.services) ||
-      !template.services.some((service) => service && service.type === "api")
-    ) {
-      throw new Error("配置模板缺少原生 API 服务，请在 services 中配置 type=api");
     }
   }
 
@@ -2245,19 +1896,6 @@ const EUROPE_REGION_CODES = new Set([
 
 // 仅这些国家单独建组；欧洲统一进欧洲组，香港及其余全部进 Other
 const FIXED_REGION_CODES = new Set(["JP", "SG", "TW", "US"]);
-
-function parseBoolish(value, defaultValue) {
-  if (value === undefined || value === null || value === "") {
-    return !!defaultValue;
-  }
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value !== 0;
-
-  const s = String(value).trim().toLowerCase();
-  if (["1", "true", "yes", "on", "y"].includes(s)) return true;
-  if (["0", "false", "no", "off", "n"].includes(s)) return false;
-  return !!defaultValue;
-}
 
 // 策略组名归一：去掉国旗 / emoji / 装饰字母，只留字母数字与中文，再转小写
 function normalizePolicyTag(tag) {
