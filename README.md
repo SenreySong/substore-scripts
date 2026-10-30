@@ -70,7 +70,7 @@ https://raw.githubusercontent.com/SenreySong/substore-scripts/main/sing-box/subs
 - 从集合 `collectionName` 拉取节点并写入模板；保留地区归组、节点排序和策略组成员整理。
 - 不再强制要求模板提供 `DNS-DIRECT` 或原生 API 服务；仅在迁移订阅节点旧解析字段时检查所需解析器。
 - 只处理订阅节点遗留的 `domain_strategy`：迁移至 `domain_resolver.strategy`，优先保留节点已有解析策略。
-- **`♾️Auto Select`**：仅挂 **新加坡 + 美国优化** 节点的 urltest（非全节点，降低 Windows TUN 风险）；不再自动修改规则集或 Dashboard 的下载出口。
+- **`♾️Auto Select`**：仅挂 **新加坡 + 美国优化** 节点的 urltest（非全节点，降低 Windows TUN 风险）。
 - **Main Proxy** 成员：地区组 + Direct（不挂 Auto Select）；**default = 成员列表第一项**。
 - 地区组默认类型：`selector`。
 - 英国、德国等欧洲国家统一进入 **`🇪🇺 欧洲策略组`**；香港及其他未单列地区进入 `🌐 Other`。

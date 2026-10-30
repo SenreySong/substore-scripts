@@ -31,8 +31,6 @@ async function operator(input, targetPlatform, context) {
     google: "Google",
     amazonOracle: "Amazon|Oracle",
     apple: "Apple",
-    streaming: "国外流媒体",
-    youtube: "",
     spotify: "Spotify",
     microsoft: "Microsoft",
   };
@@ -256,8 +254,6 @@ async function operator(input, targetPlatform, context) {
     appTagMap.google,
     appTagMap.amazonOracle,
     appTagMap.apple,
-    appTagMap.streaming,
-    appTagMap.youtube,
     appTagMap.spotify,
     appTagMap.microsoft,
     // GitHub 不再由脚本接管；模板已有组保持原有成员与规则关系。
@@ -1330,42 +1326,11 @@ async function operator(input, targetPlatform, context) {
       if (group) tags.add(group.tag);
     }
 
-    applyStreamingGroupPlan(regionPlusMain, tags);
 
     // 模板里有、但不在上述 GFS 映射中的应用组：只同步地区成员，不改名
     syncExtraTemplateGroups(regions, nodeTags, tags);
 
     return tags;
-  }
-
-  // 国外流媒体仅作为 YouTube 的兜底；Disney 分流完全由模板提供。
-  // 模板已有 YouTube / Google 组时不再新建，并删掉多余的流媒体组。
-  function applyStreamingGroupPlan(regionPlusMain, tags) {
-    const existingGroupTags = config.outbounds
-      .filter((item) => item && isPolicyGroup(item) && item.tag)
-      .map((item) => item.tag);
-    const plan = resolveStreamingTargets(existingGroupTags, appTagMap.google);
-
-    if (plan.needsStreamingGroup) {
-      const group = ensureResolvedAppGroup(
-        "streaming",
-        "国外流媒体",
-        ["国外流媒体", "Streaming", "📺Streaming"],
-        regionPlusMain,
-      );
-      const streamingTag = group ? group.tag : plan.streamingTag;
-      appTagMap.streaming = streamingTag;
-      appTagMap.youtube =
-        plan.youtube === plan.streamingTag ? streamingTag : plan.youtube;
-      if (group) tags.add(group.tag);
-      return;
-    }
-
-    appTagMap.streaming = "";
-    appTagMap.youtube = plan.youtube;
-    if (plan.existingStreamingTag) {
-      removeOutboundCompletely(plan.existingStreamingTag);
-    }
   }
 
   function syncExtraTemplateGroups(regions, nodeTags, alreadyManaged) {
@@ -1425,7 +1390,6 @@ async function operator(input, targetPlatform, context) {
     // 脚本只注入模板没有的规则集（CN/广告等大类不再重复注入）
     return [
       { tag: "openai", url: `${geo}/geosite/openai.srs` },
-      { tag: "youtube", url: `${geo}/geosite/youtube.srs` },
       { tag: "spotify", url: `${geo}/geosite/spotify.srs` },
       { tag: "amazon", url: `${geo}/geosite/amazon.srs` },
       { tag: "oracle", url: `${geo}/geosite/oracle.srs` },
@@ -1475,7 +1439,6 @@ async function operator(input, targetPlatform, context) {
       tiktok: appTagMap.tiktok || "Tiktok",
       twitter: appTagMap.twitter || "Twitter",
       amazonOracle: appTagMap.amazonOracle || "Amazon|Oracle",
-      youtube: appTagMap.youtube || appTagMap.google || MAIN_PROXY_TAG,
       spotify: appTagMap.spotify || "Spotify",
     };
 
@@ -1504,17 +1467,6 @@ async function operator(input, targetPlatform, context) {
           action: "route",
           rule_set: ["openai"],
           outbound: t.openai,
-        },
-      },
-      // YouTube 比 Google 更具体，必须单独且排在 Google 前，避免被 google geosite 吃掉
-      {
-        id: "gfs-youtube",
-        test: (rule) =>
-          hasAnyRuleSet(rule, ["youtube", "youtube-geosite.srs", "youtube-geosite.json"]),
-        rule: {
-          action: "route",
-          rule_set: ["youtube"],
-          outbound: t.youtube,
         },
       },
       {
@@ -1934,34 +1886,6 @@ function matchPolicyGroupTag(existingTags, preferred, aliases) {
   return found || preferred;
 }
 
-// YouTube 能落到模板已有组时，不再保留「国外流媒体」
-function resolveStreamingTargets(existingTags, googleTag) {
-  const tags = Array.isArray(existingTags) ? existingTags.filter(Boolean) : [];
-  const youtubeDedicated = findPolicyTagByNames(tags, [
-    "youtube",
-    "ytb",
-    "YouTube",
-    "Youtube",
-  ]);
-  const existingStreamingTag = findPolicyTagByNames(tags, [
-    "国外流媒体",
-    "Streaming",
-    "📺Streaming",
-  ]);
-
-  const needsStreamingGroup = !youtubeDedicated && !googleTag;
-  const streamingTag = needsStreamingGroup
-    ? existingStreamingTag || "国外流媒体"
-    : "";
-
-  return {
-    youtube: youtubeDedicated || googleTag || streamingTag,
-    needsStreamingGroup,
-    streamingTag,
-    existingStreamingTag,
-  };
-}
-
 // ─── 地区组内节点排序（大小写不敏感） ─────────────────────────
 // 优先级：
 // 1) 含「赠」的最后
@@ -2140,6 +2064,5 @@ if (typeof module !== "undefined" && module.exports) {
     normalizePolicyTag,
     findPolicyTagByNames,
     matchPolicyGroupTag,
-    resolveStreamingTargets,
   };
 }
