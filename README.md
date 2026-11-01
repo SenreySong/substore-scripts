@@ -86,7 +86,7 @@ https://raw.githubusercontent.com/SenreySong/substore-scripts/main/sing-box/subs
 - 原生 API、Dashboard、认证和访问控制完全沿用模板。
 - **TUN / mixed 入站、DNS 解析链和默认解析器**完全按 1.15 模板，不再删除 `stack`、改写监听地址或重复注入 DNS 劫持规则；旧字段应在模板中完成迁移。
 - 不再自动创建或归一化 `Direct` / `Block` 出站，保留模板现有定义。
-- 创建独立的 `Final` selector 策略组，成员固定为模板已有的 Main Proxy 和 Direct，并将 `route.final` 指向 `Final`；规则处理不再对模板规则分类或排序，保留模板开头连续的 DNS / 基础控制规则，脚本应用分流插入其后，模板其他规则保持原有顺序。
+- `route.final` 完全沿用模板，脚本不再创建 Final 策略组或改写最终出站；规则处理不再对模板规则分类或排序，保留模板开头连续的 DNS / 基础控制规则，脚本应用分流插入其后，模板其他规则保持原有顺序。
 - 不再写入 `interrupt_exist_connections`，原有值沿用模板；旧的 `interruptExistConnections` 参数不再生效。
 - 合并前清理空模板组，合并后统一清洗一次策略组成员和默认值；识别有效 outbounds 与 endpoints，不再按规则集名称含 `local` 就删除模板路由。
 

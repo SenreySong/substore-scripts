@@ -17,7 +17,6 @@ async function operator(input, targetPlatform, context) {
     args.name ||
     "";
   const MAIN_PROXY_TAG = "🌏️Main Proxy";
-  const FINAL_TAG = "Final";
   // 仅新加坡 + 美国优化节点参与测速，不改写规则集或面板下载配置。
   const AUTO_SELECT_TAG = "♾️Auto Select";
   const TEST_URL = "https://cp.cloudflare.com";
@@ -236,13 +235,11 @@ async function operator(input, targetPlatform, context) {
     regionGroupTagsOrdered,
     allNodeTags,
   );
-  const finalGroup = ensureFinalGroup();
 
   const generatedGroupTagSetAll = new Set([
     ...generatedGroupTagSet,
     ...managedAppGroupTags,
     ...(autoSelectGroup ? [AUTO_SELECT_TAG] : []),
-    ...(finalGroup ? [finalGroup.tag] : []),
   ]);
 
   // 已由 ensureGfsAppGroups / syncExtra / Auto Select 处理的组，避免二次灌入
@@ -277,7 +274,6 @@ async function operator(input, targetPlatform, context) {
     "🎙️Discord",
     "🎨Pixiv",
     AUTO_SELECT_TAG,
-    FINAL_TAG,
     "全部节点",
   ]);
 
@@ -1077,19 +1073,6 @@ async function operator(input, targetPlatform, context) {
     }
 
     config.outbounds = [...regionGroups, ...otherGroups, ...leaves];
-  }
-
-  function ensureFinalGroup() {
-    const mainProxyTag = appTagMap.mainProxy || MAIN_PROXY_TAG;
-    const members = [mainProxyTag, "Direct"].filter((tag) =>
-      findOutboundByTag(tag),
-    );
-    const group = ensureSelectorGroup(FINAL_TAG, uniqueList(members));
-
-    if (!group || !group.outbounds.length) return null;
-
-    config.route.final = FINAL_TAG;
-    return group;
   }
 
   function ensureSelectorGroup(tag, members) {
