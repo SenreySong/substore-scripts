@@ -82,7 +82,7 @@ https://raw.githubusercontent.com/SenreySong/substore-scripts/main/sing-box/subs
 - 不再新增 `Direct` / `Global` 路由或 DNS 模式规则；模板自带的模式规则及其 `GLOBAL` / `Global` 策略组保留。
 - **缓存配置**（`experimental.cache_file`）完全按模板，脚本不改写。
 - **IPv6**：完全沿用模板，脚本不改写 DNS 解析策略、Fake-IP 地址范围、TUN 地址或 IPv6 路由排除项。
-- `China-Site` / `China-IP` 规则集及中国流量分流由脚本补充到 `🇨🇳China Services`；私有 IP / 私有域名规则完全由模板管理，脚本不再注入或改写。
+- 中国域名 / IP 分流完全由模板管理，脚本不再注入或改写；私有 IP / 私有域名规则同样由模板管理。
 - 原生 API、Dashboard、认证和访问控制完全沿用模板。
 - **TUN / mixed 入站、DNS 解析链和默认解析器**完全按 1.15 模板，不再删除 `stack`、改写监听地址或重复注入 DNS 劫持规则；旧字段应在模板中完成迁移。
 - 不再自动创建或归一化 `Direct` / `Block` 出站，保留模板现有定义。

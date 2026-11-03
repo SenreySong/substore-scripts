@@ -1389,8 +1389,6 @@ async function operator(input, targetPlatform, context) {
     // 模板已自带 AD/AI/Apple/Google/Microsoft/Telegram/Netflix/Bahamut 等 -Site 规则集，
     // 脚本只注入模板没有的规则集（CN/广告等大类不再重复注入）
     return [
-      { tag: "China-Site", url: "https://cdn.jsdmirror.com/gh/HosheaPDNX/rule-set@000b704/sing-box/China/China-Site-V3.srs" },
-      { tag: "China-IP", url: "https://cdn.jsdmirror.com/gh/HosheaPDNX/rule-set@000b704/sing-box/China/China-IP-V3.srs" },
       { tag: "openai", url: `${geo}/geosite/openai.srs` },
       { tag: "spotify", url: `${geo}/geosite/spotify.srs` },
       { tag: "amazon", url: `${geo}/geosite/amazon.srs` },
@@ -1445,15 +1443,6 @@ async function operator(input, targetPlatform, context) {
     };
 
     return [
-      {
-        id: "gfs-china",
-        test: (rule) => hasAnyRuleSet(rule, ["China-Site", "China-IP"]),
-        rule: {
-          action: "route",
-          rule_set: ["China-Site", "China-IP"],
-          outbound: "🇨🇳China Services",
-        },
-      },
       {
         id: "gfs-twitter",
         test: (rule) =>
